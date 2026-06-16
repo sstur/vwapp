@@ -76,6 +76,17 @@ export const commandSchema = z.object({
 });
 export type CommandInput = z.infer<typeof commandSchema>;
 
+/** A pinned-location request for a signed Apple Maps snapshot image URL. */
+export const parkedMapSchema = z.object({
+  lat: z.number(),
+  lng: z.number(),
+  /** Display size in points; the server renders at 2x for retina. */
+  widthPt: z.number().int().min(100).max(640),
+  heightPt: z.number().int().min(100).max(640),
+  dark: z.boolean(),
+});
+export type ParkedMapInput = z.infer<typeof parkedMapSchema>;
+
 /** Start a managed climate session: keep climate on for `durationMin`, at `tempF`. */
 export const climateStartSchema = z.object({
   uuid: z.string().optional(),
@@ -174,6 +185,15 @@ export const contract = {
     messages: oc
       .input(z.object({ uuid: z.string().optional() }))
       .output(z.object({ messages: z.array(inboxMessageSchema) })),
+    /**
+     * A signed Apple Maps Web Snapshot URL for the parked location. The Worker
+     * signs it with the server-held MapKit key (the .p8 never leaves the
+     * backend); the app loads the result as a plain image — no native map
+     * module needed, so it renders the same in Expo Go and production.
+     */
+    parkedMapUrl: oc
+      .input(parkedMapSchema)
+      .output(z.object({ url: z.string() })),
   },
 };
 

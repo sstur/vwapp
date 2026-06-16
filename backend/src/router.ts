@@ -2,6 +2,7 @@ import { implement, ORPCError } from "@orpc/server";
 import { contract, type VehicleDTO } from "@vwapp/contract";
 import { seal, sha256Hex, timingSafeEqual, unseal } from "./crypto";
 import type { AppEnv } from "./env";
+import { signSnapshotUrl } from "./maps";
 import {
   clearUserData,
   endClimateSession,
@@ -916,6 +917,25 @@ async function snapshotNow(
   }
 }
 
+// A signed Apple Maps snapshot URL for the parked location. Pure signing — no
+// VW traffic, no S-PIN; just gated to an authenticated user. The coords come
+// from the client (which already has them from the snapshot live query); the
+// signature authorizes only this one image.
+const parkedMapUrl = os.vehicle.parkedMapUrl.handler(
+  async ({ input, context }) => {
+    requireUser(context);
+    const url = await signSnapshotUrl(context.env, {
+      lat: input.lat,
+      lng: input.lng,
+      widthPt: input.widthPt,
+      heightPt: input.heightPt,
+      scale: 2,
+      dark: input.dark,
+    });
+    return { url };
+  },
+);
+
 export const router = os.router({
   auth: { login, me, logout },
   vehicle: {
@@ -929,6 +949,7 @@ export const router = os.router({
     setChargeLimit,
     activity,
     messages,
+    parkedMapUrl,
   },
 });
 

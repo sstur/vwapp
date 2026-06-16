@@ -288,7 +288,10 @@ used two ways, and **both perform real VW password logins** (mind the throttle
   credentials (`VW_USERNAME`, `VW_PASSWORD`, `VW_PIN`) — used by the PoC and to
   drive simulator login tests; see *Testing with real VW credentials*.
   `backend/.dev.vars` = `INSTANT_APP_ID`,
-  `INSTANT_ADMIN_TOKEN`, `CREDS_ENC_KEY`; `app/.env` =
+  `INSTANT_ADMIN_TOKEN`, `CREDS_ENC_KEY`, and the Apple Maps Web Snapshot
+  signing keys `APPLE_MAPS_TEAM_ID` / `APPLE_MAPS_KEY_ID` /
+  `APPLE_MAPS_PRIVATE_KEY` (the `.p8` PEM, used by `src/maps.ts` to sign the
+  parked-location snapshot URL); `app/.env` =
   `EXPO_PUBLIC_INSTANT_APP_ID` (public, but must be recreated per clone).
 - Routes live in `app/src/app/` only; providers/utilities stay outside it.
   Kebab-case filenames.

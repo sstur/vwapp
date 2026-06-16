@@ -1,19 +1,21 @@
 import { SfIcon } from "@/components/sf-icon";
 import { db } from "@/db";
 import { agoLabel, useNow } from "@/hooks/use-now";
-import Constants, { ExecutionEnvironment } from "expo-constants";
+import { useThemeToggle } from "@/providers/theme-provider";
+import { orpc } from "@/rpc";
+import { useQuery } from "@tanstack/react-query";
 import { Stack } from "expo-router";
-import { lazy, Suspense, type ReactNode } from "react";
-import { Linking, Platform, ScrollView } from "react-native";
+import type { ReactNode } from "react";
+import {
+  Image,
+  Linking,
+  Pressable,
+  ScrollView,
+  useWindowDimensions,
+} from "react-native";
 import { Button, Paragraph, Spinner, Text, XStack, YStack } from "tamagui";
 
-// expo-maps is a native module absent from Expo Go, so it can only render in a
-// dev/TestFlight build (and on iOS — it wraps MapKit). Loaded lazily so the
-// module is never evaluated where it would throw; Expo Go gets a placeholder.
-const ParkedMap = lazy(() => import("@/components/parked-map"));
-const nativeMapAvailable =
-  Platform.OS === "ios" &&
-  Constants.executionEnvironment !== ExecutionEnvironment.StoreClient;
+const MAP_HEIGHT = 200;
 
 /**
  * Where the car last parked: the location details we have from VW (a mini-map
@@ -154,7 +156,7 @@ export default function ParkedScreen() {
   );
 }
 
-/** Centered fill used both as the map's loading state and its fallback box. */
+/** Centered fill used for the map's loading and error states. */
 function MapBox({ children }: { children?: ReactNode }) {
   return (
     <YStack flex={1} bg="$color2" items="center" justify="center" gap="$2">
@@ -164,38 +166,61 @@ function MapBox({ children }: { children?: ReactNode }) {
 }
 
 /**
- * The inline map. Renders the native Apple Maps view where it's available
- * (iOS dev/TestFlight build), and a graceful placeholder elsewhere (Expo Go,
- * Android) — the Open-in-Maps buttons below cover those cases.
+ * Inline map: a static Apple Maps snapshot the Worker signs server-side (no
+ * native map module, so it renders identically in Expo Go and production).
+ * Tapping it opens the full Apple Maps app. The signed URL carries a
+ * time-boxed MapKit token, so we cache it for under the token's lifetime and
+ * let it refetch (re-sign) after — the query key (coords + theme) also busts
+ * it whenever the location or appearance changes.
  */
 function MapPanel({ lat, lng }: { lat: number; lng: number }) {
+  const { pref } = useThemeToggle();
+  const { width } = useWindowDimensions();
+  const widthPt = Math.min(640, Math.max(100, Math.round(width - 32)));
+  const map = useQuery({
+    ...orpc.vehicle.parkedMapUrl.queryOptions({
+      input: { lat, lng, widthPt, heightPt: MAP_HEIGHT, dark: pref === "dark" },
+    }),
+    staleTime: 25 * 60 * 1000, // < the backend's 30-min token TTL
+  });
+
   return (
-    <YStack
-      height={200}
-      rounded="$6"
-      overflow="hidden"
-      borderWidth={1}
-      borderColor="$borderColor"
+    <Pressable
+      onPress={() => {
+        void Linking.openURL(appleMapsUrl(lat, lng));
+      }}
+      accessibilityRole="button"
+      accessibilityLabel="Open parked location in Apple Maps"
     >
-      {nativeMapAvailable ? (
-        <Suspense
-          fallback={
-            <MapBox>
+      <YStack
+        height={MAP_HEIGHT}
+        rounded="$6"
+        overflow="hidden"
+        borderWidth={1}
+        borderColor="$borderColor"
+      >
+        {map.data !== undefined ? (
+          <Image
+            source={{ uri: map.data.url }}
+            style={{ flex: 1 }}
+            resizeMode="cover"
+          />
+        ) : (
+          <MapBox>
+            {map.isError ? (
+              <>
+                <SfIcon name="map" color="$color10" size={28} />
+                <Paragraph color="$color10" fontSize="$2">
+                  Map preview unavailable
+                </Paragraph>
+              </>
+            ) : (
               <Spinner color="$color10" />
-            </MapBox>
-          }
-        >
-          <ParkedMap lat={lat} lng={lng} />
-        </Suspense>
-      ) : (
-        <MapBox>
-          <SfIcon name="map" color="$color10" size={28} />
-          <Paragraph color="$color10" fontSize="$2">
-            Map preview unavailable here
-          </Paragraph>
-        </MapBox>
-      )}
-    </YStack>
+            )}
+          </MapBox>
+        )}
+      </YStack>
+    </Pressable>
   );
 }
 
