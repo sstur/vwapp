@@ -2,7 +2,6 @@
   "expo": {
     "name": "VW App",
     "slug": "vwapp",
-    "owner": "sstur",
     "version": "1.0.7",
     "runtimeVersion": {
       "policy": "sdkVersion"
@@ -13,7 +12,6 @@
     "userInterfaceStyle": "automatic",
     "ios": {
       "icon": "./assets/expo.icon",
-      "bundleIdentifier": "com.sstur.vwapp",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
       }
@@ -47,13 +45,7 @@
       "reactCompiler": true
     },
     "extra": {
-      "router": {},
-      "eas": {
-        "projectId": "7f681e04-0b6f-4e72-a753-3e9b45cc9cf6"
-      }
-    },
-    "updates": {
-      "url": "https://u.expo.dev/7f681e04-0b6f-4e72-a753-3e9b45cc9cf6"
+      "router": {}
     }
   }
 }

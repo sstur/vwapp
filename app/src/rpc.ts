@@ -6,13 +6,14 @@ import type { contract } from "@vwapp/contract";
 import Constants from "expo-constants";
 import { db } from "./db";
 
-const PROD_API_URL = "https://vwapp-api.sstur.workers.dev/rpc";
-
 /**
- * EXPO_PUBLIC_API_URL overrides everything. Otherwise, when served by a Metro
- * dev server, target the Worker dev server on the same machine (hostUri is the
- * Metro host — localhost for a simulator, the LAN IP for a physical device);
- * a published bundle (EAS Update) has no dev server and targets prod.
+ * EXPO_PUBLIC_API_URL points at the deployed Worker (e.g.
+ * https://vwapp-api.<your-subdomain>.workers.dev/rpc) and is required for any
+ * published build — set it per-deployer in app/.env. Otherwise, when served by
+ * a Metro dev server, target the Worker dev server on the same machine (hostUri
+ * is the Metro host — localhost for a simulator, the LAN IP for a physical
+ * device). A published bundle (EAS Update) has no dev server, so it must rely on
+ * EXPO_PUBLIC_API_URL; with neither present we fail loudly rather than guess.
  */
 function resolveApiUrl(): string {
   const override = process.env.EXPO_PUBLIC_API_URL;
@@ -22,7 +23,9 @@ function resolveApiUrl(): string {
     const host = hostUri.split(":")[0];
     if (host !== undefined && host !== "") return `http://${host}:8787/rpc`;
   }
-  return PROD_API_URL;
+  throw new Error(
+    "Set EXPO_PUBLIC_API_URL in app/.env to your deployed Worker URL (e.g. https://vwapp-api.<subdomain>.workers.dev/rpc)",
+  );
 }
 
 /** Exported for display in Settings — "which backend am I talking to?". */

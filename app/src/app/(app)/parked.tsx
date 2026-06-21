@@ -199,7 +199,7 @@ function MapPanel({ lat, lng }: { lat: number; lng: number }) {
         borderWidth={1}
         borderColor="$borderColor"
       >
-        {map.data !== undefined ? (
+        {map.data?.url != null ? (
           <Image
             source={{ uri: map.data.url }}
             style={{ flex: 1 }}
@@ -207,7 +207,7 @@ function MapPanel({ lat, lng }: { lat: number; lng: number }) {
           />
         ) : (
           <MapBox>
-            {map.isError ? (
+            {map.isError || map.data?.url === null ? (
               <>
                 <SfIcon name="map" color="$color10" size={28} />
                 <Paragraph color="$color10" fontSize="$2">

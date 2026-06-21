@@ -2,7 +2,7 @@ import { implement, ORPCError } from "@orpc/server";
 import { contract, type VehicleDTO } from "@vwapp/contract";
 import { seal, sha256Hex, timingSafeEqual, unseal } from "./crypto";
 import type { AppEnv } from "./env";
-import { signSnapshotUrl } from "./maps";
+import { isMapsConfigured, signSnapshotUrl } from "./maps";
 import {
   clearUserData,
   endClimateSession,
@@ -924,6 +924,9 @@ async function snapshotNow(
 const parkedMapUrl = os.vehicle.parkedMapUrl.handler(
   async ({ input, context }) => {
     requireUser(context);
+    // Apple Maps is optional — without signing keys the parked map is simply
+    // disabled (null url) and the app shows coordinates only.
+    if (!isMapsConfigured(context.env)) return { url: null };
     const url = await signSnapshotUrl(context.env, {
       lat: input.lat,
       lng: input.lng,

@@ -6,7 +6,7 @@
     "dev": "pnpm run \"/^dev:/\"",
     "dev:worker": "wrangler dev --ip 0.0.0.0",
     "dev:cron": "while true; do sleep 60; curl -s -o /dev/null --max-time 50 \"http://localhost:8787/cdn-cgi/handler/scheduled\" || true; done",
-    "deploy": "wrangler deploy",
+    "deploy": "set -a; [ -f .env ] && . ./.env; set +a; wrangler deploy",
     "cf-typegen": "wrangler types",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",

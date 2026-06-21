@@ -1,0 +1,22 @@
+# Backend Worker secrets. Copy to `.dev.vars` (gitignored) and fill in.
+# For local dev these are loaded automatically; for production push them with
+#   npx wrangler secret bulk .dev.vars
+# (Apple Maps keys are optional — see the bottom block.)
+
+# InstantDB app you created (https://instantdb.com) + its admin token.
+INSTANT_APP_ID=your-instant-app-id
+INSTANT_ADMIN_TOKEN=your-instant-admin-token
+
+# AES-GCM key sealing stored VW credentials — base64 of 32 random bytes.
+# Generate one with:  openssl rand -base64 32
+CREDS_ENC_KEY=base64-of-32-random-bytes
+
+# (CLOUDFLARE_ACCOUNT_ID is a deploy-time var, not a Worker secret — it lives in
+#  backend/.env; see backend/.env.example.)
+
+# --- Optional: parked-location map (Apple MapKit) ---
+# Leave these unset to disable the map (the app shows coordinates only and works
+# fully otherwise). To enable, supply an Apple Developer MapKit JS key:
+#   APPLE_MAPS_TEAM_ID=your-apple-team-id
+#   APPLE_MAPS_KEY_ID=your-mapkit-key-id
+#   APPLE_MAPS_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----"

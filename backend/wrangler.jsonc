@@ -1,7 +1,9 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "vwapp-api",
-  "account_id": "41552a3f2adc1c212934e9e3a03a5f27",
+  // No account_id pinned here so anyone can deploy to their own account: set
+  // CLOUDFLARE_ACCOUNT_ID in the environment before `wrangler deploy` (wrangler
+  // reads it natively). Each deployer gets vwapp-api.<their-subdomain>.workers.dev.
   "main": "src/index.ts",
   "compatibility_date": "2026-06-01",
   "compatibility_flags": ["nodejs_compat"],

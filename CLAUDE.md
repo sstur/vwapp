@@ -18,21 +18,33 @@ pnpm --filter @vwapp/backend dev          # Worker on localhost:8787
 pnpm --filter @vwapp/mobile start         # Expo (app expects Worker on :8787 unless EXPO_PUBLIC_API_URL set)
 ```
 
-**Production Worker:** deployed as `vwapp-api` on the personal Cloudflare
-account (`account_id` pinned in `backend/wrangler.jsonc`) at
-<https://vwapp-api.sstur.workers.dev> — deploy with `npx wrangler deploy` from
-`backend/`. Prod shares dev's InstantDB app + `CREDS_ENC_KEY` (secrets =
-`.dev.vars`, pushed via `wrangler secret bulk`), so the cron polls VW for real
-every minute once deployed.
+**Deployable by anyone (no owner values committed):** every account/identity
+value comes from gitignored env files created from the `*.example` templates
+(root `.env`, `backend/.dev.vars`, `app/.env`) — see README "Deploy your own
+instance". `backend/wrangler.jsonc` pins **no** `account_id`; deploy targets your
+account via `CLOUDFLARE_ACCOUNT_ID` in the environment. Apple Maps is optional
+(see *Data freshness* / `isMapsConfigured`).
 
-**Publishing the app (EAS Update → Expo Go):** Expo project is
-`@sstur/vwapp` (expo.dev/accounts/sstur/projects/vwapp). From `app/`:
-`npx eas-cli update --branch main --message "..." --environment production`.
-The API URL is resolved at runtime in `app/src/rpc.ts`: explicit
-`EXPO_PUBLIC_API_URL` → else Metro dev-server host (port 8787; works for
-simulator and LAN devices — `dev:worker` binds 0.0.0.0 for this) → else the
-prod Worker. Keep `runtimeVersion: {policy: "sdkVersion"}` — Expo Go can only
-load updates whose runtime is its own SDK (`exposdk:56.0.0`).
+**Production Worker:** deployed as `vwapp-api` from `backend/` with
+`pnpm --filter @vwapp/backend deploy` (the `deploy` script sources
+`backend/.env` for `CLOUDFLARE_ACCOUNT_ID` so wrangler targets your account) →
+`vwapp-api.<your-subdomain>.workers.dev`. Prod shares dev's InstantDB app +
+`CREDS_ENC_KEY` (secrets = `.dev.vars`, pushed via `wrangler secret bulk`), so
+the cron polls VW for real every minute once deployed.
+
+**Publishing the app (EAS Update → Expo Go):** owner-specific Expo config is
+env-driven via `app/app.config.ts` (which augments the generic `app.json`):
+`EXPO_OWNER`, `EAS_PROJECT_ID` (→ `extra.eas.projectId` + the `updates.url`), and
+`IOS_BUNDLE_IDENTIFIER`. Publish with `pnpm --filter @vwapp/mobile update --
+--message "..."` — the `update` script sources `app/.env` first because
+`eas-cli`'s project resolver reads `EAS_PROJECT_ID` from the real shell env, not
+from the dotenv-loaded config (`expo` does load it, `eas` does not). The API URL
+is resolved at runtime in
+`app/src/rpc.ts`: explicit `EXPO_PUBLIC_API_URL` (required for published builds)
+→ else Metro dev-server host (port 8787; works for simulator and LAN devices —
+`dev:worker` binds 0.0.0.0 for this) → else it throws (no hardcoded prod
+fallback). Keep `runtimeVersion: {policy: "sdkVersion"}` — Expo Go can only load
+updates whose runtime is its own SDK (`exposdk:56.0.0`).
 
 Backend scripts (run from `backend/`, plain Node ≥24 runs the TS directly):
 
@@ -288,14 +300,20 @@ used two ways, and **both perform real VW password logins** (mind the throttle
   zero height (sheet presents invisibly) and the zero-size anchor Host knocks
   sibling buttons out of the accessibility tree — verified live; keep Tamagui
   Sheet for RN-content sheets.
-- Env layout (all gitignored): root `.env` = the owner's **real** myVW
-  credentials (`VW_USERNAME`, `VW_PASSWORD`, `VW_PIN`) — used by the PoC and to
-  drive simulator login tests; see *Testing with real VW credentials*.
-  `backend/.dev.vars` = `INSTANT_APP_ID`,
-  `INSTANT_ADMIN_TOKEN`, `CREDS_ENC_KEY`, and the Apple Maps Web Snapshot
-  signing keys `APPLE_MAPS_TEAM_ID` / `APPLE_MAPS_KEY_ID` /
-  `APPLE_MAPS_PRIVATE_KEY` (the `.p8` PEM, used by `src/maps.ts` to sign the
-  parked-location snapshot URL); `app/.env` =
-  `EXPO_PUBLIC_INSTANT_APP_ID` (public, but must be recreated per clone).
+- Env layout (real files all gitignored; each has a committed `*.example`
+  template — see README "Deploy your own instance"): root `.env` = the owner's
+  **real** myVW credentials (`VW_USERNAME`, `VW_PASSWORD`, `VW_PIN`) — used by
+  the PoC and to drive simulator login tests; see *Testing with real VW
+  credentials*. `backend/.dev.vars` = `INSTANT_APP_ID`, `INSTANT_ADMIN_TOKEN`,
+  `CREDS_ENC_KEY`, and **optionally** the Apple Maps Web Snapshot signing keys
+  `APPLE_MAPS_TEAM_ID` / `APPLE_MAPS_KEY_ID` / `APPLE_MAPS_PRIVATE_KEY` (the
+  `.p8` PEM, used by `src/maps.ts` to sign the parked-location snapshot URL —
+  when absent, `isMapsConfigured` is false and `vehicle.parkedMapUrl` returns
+  `{url: null}`, so the app shows coordinates only). `backend/.env` =
+  `CLOUDFLARE_ACCOUNT_ID` (deploy-time only, not a Worker secret; auto-sourced by
+  the `deploy` script). `app/.env` =
+  `EXPO_PUBLIC_INSTANT_APP_ID` + `EXPO_PUBLIC_API_URL` (both bundled; recreate
+  per clone) and the config-time-only `EXPO_OWNER` / `EAS_PROJECT_ID` /
+  `IOS_BUNDLE_IDENTIFIER` read by `app/app.config.ts`.
 - Routes live in `app/src/app/` only; providers/utilities stay outside it.
   Kebab-case filenames.

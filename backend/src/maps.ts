@@ -7,6 +7,15 @@ const TOKEN_TTL_SEC = 30 * 60;
 
 const encoder = new TextEncoder();
 
+/** True when all three MapKit signing secrets are present (parked map enabled). */
+export function isMapsConfigured(env: AppEnv): boolean {
+  return Boolean(
+    env.APPLE_MAPS_TEAM_ID &&
+    env.APPLE_MAPS_KEY_ID &&
+    env.APPLE_MAPS_PRIVATE_KEY,
+  );
+}
+
 /** Copy into a fresh ArrayBuffer-backed view (Web Crypto rejects SharedArrayBuffer). */
 function toArrayBuffer(u: Uint8Array): ArrayBuffer {
   const copy = new Uint8Array(u.length);
@@ -47,15 +56,20 @@ async function importSigningKey(pem: string): Promise<CryptoKey> {
  * output is already the raw r‖s form ES256 expects.
  */
 async function mintToken(env: AppEnv): Promise<string> {
-  const header = { alg: "ES256", kid: env.APPLE_MAPS_KEY_ID, typ: "JWT" };
+  const teamId = env.APPLE_MAPS_TEAM_ID;
+  const keyId = env.APPLE_MAPS_KEY_ID;
+  const privateKey = env.APPLE_MAPS_PRIVATE_KEY;
+  if (!teamId || !keyId || !privateKey)
+    throw new Error("Apple Maps signing keys are not configured");
+  const header = { alg: "ES256", kid: keyId, typ: "JWT" };
   const iat = Math.floor(Date.now() / 1000);
   const payload = {
-    iss: env.APPLE_MAPS_TEAM_ID,
+    iss: teamId,
     iat,
     exp: iat + TOKEN_TTL_SEC,
   };
   const signingInput = `${base64UrlText(JSON.stringify(header))}.${base64UrlText(JSON.stringify(payload))}`;
-  const key = await importSigningKey(env.APPLE_MAPS_PRIVATE_KEY);
+  const key = await importSigningKey(privateKey);
   const sig = await crypto.subtle.sign(
     { name: "ECDSA", hash: "SHA-256" },
     key,

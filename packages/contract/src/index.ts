@@ -193,7 +193,9 @@ export const contract = {
      */
     parkedMapUrl: oc
       .input(parkedMapSchema)
-      .output(z.object({ url: z.string() })),
+      // url is null when the backend has no Apple Maps signing keys configured
+      // (the parked-map feature is optional — the app falls back to coords).
+      .output(z.object({ url: z.string().nullable() })),
   },
 };
 
