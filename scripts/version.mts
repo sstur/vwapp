@@ -24,7 +24,7 @@ try {
     [
       "commit",
       "-qm",
-      `Bump version to ${next ?? ""}`,
+      `v${next ?? ""}`,
       "app/app.json",
       "app/package.json",
     ],
