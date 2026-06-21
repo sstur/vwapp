@@ -31,7 +31,7 @@ const LONG_SESSION_MIN = 360; // >6h shows a battery caution
  * mirror its in-flight/error state after this sheet closes — see ClimateControl.
  * Seeds come in as params: Adjust carries the live session's temp + end so
  * changing only the temp keeps the schedule; Start fetches the car's current
- * target temp and defaults the duration to 1h.
+ * target temp and defaults the duration to 30m.
  */
 export default function ClimateSheet() {
   const insets = useSafeAreaInsets();
@@ -58,7 +58,7 @@ export default function ClimateSheet() {
   const [durationMin, setDurationMin] = useState(() =>
     seededEndMs !== null
       ? Math.max(5, Math.round((seededEndMs - Date.now()) / 60000))
-      : 60,
+      : 30,
   );
   // null until the user adjusts the stepper; the shown temp otherwise derives
   // from the seed (the session's temp, or the car's current target).
