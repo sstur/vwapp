@@ -7,20 +7,23 @@ import { useQuery } from "@tanstack/react-query";
 import { Stack } from "expo-router";
 import type { ReactNode } from "react";
 import {
+  ActionSheetIOS,
+  Alert,
   Image,
   Linking,
+  Platform,
   Pressable,
   ScrollView,
   useWindowDimensions,
 } from "react-native";
-import { Button, Paragraph, Spinner, Text, XStack, YStack } from "tamagui";
+import { Paragraph, Spinner, Text, XStack, YStack } from "tamagui";
 
 const MAP_HEIGHT = 200;
 
 /**
- * Where the car last parked: the location details we have from VW (a mini-map
- * embed is a likely future addition), with handoff buttons to Apple Maps and
- * Google Maps.
+ * Where the car last parked: an inline Apple Maps snapshot plus the location
+ * details from VW. Tapping the map offers a native "open in Apple/Google Maps"
+ * action sheet.
  */
 export default function ParkedScreen() {
   const now = useNow();
@@ -127,28 +130,6 @@ export default function ParkedScreen() {
                 </Paragraph>
               </XStack>
             </YStack>
-
-            <YStack gap="$3">
-              <Button
-                size="$5"
-                theme="blue"
-                icon={<SfIcon name="map.fill" />}
-                onPress={() => {
-                  void Linking.openURL(appleMapsUrl(parked.lat, parked.lng));
-                }}
-              >
-                Open in Apple Maps
-              </Button>
-              <Button
-                size="$5"
-                icon={<SfIcon name="map" />}
-                onPress={() => {
-                  void openGoogleMaps(parked.lat, parked.lng);
-                }}
-              >
-                Open in Google Maps
-              </Button>
-            </YStack>
           </YStack>
         ) : null}
       </ScrollView>
@@ -168,10 +149,10 @@ function MapBox({ children }: { children?: ReactNode }) {
 /**
  * Inline map: a static Apple Maps snapshot the Worker signs server-side (no
  * native map module, so it renders identically in Expo Go and production).
- * Tapping it opens the full Apple Maps app. The signed URL carries a
- * time-boxed MapKit token, so we cache it for under the token's lifetime and
- * let it refetch (re-sign) after — the query key (coords + theme) also busts
- * it whenever the location or appearance changes.
+ * Tapping it offers Apple/Google Maps via a native action sheet. The signed
+ * URL carries a time-boxed MapKit token, so we cache it for under the token's
+ * lifetime and let it refetch (re-sign) after — the query key (coords + theme)
+ * also busts it whenever the location or appearance changes.
  */
 function MapPanel({ lat, lng }: { lat: number; lng: number }) {
   const { pref } = useThemeToggle();
@@ -187,10 +168,11 @@ function MapPanel({ lat, lng }: { lat: number; lng: number }) {
   return (
     <Pressable
       onPress={() => {
-        void Linking.openURL(appleMapsUrl(lat, lng));
+        chooseMapsApp(lat, lng, pref);
       }}
       accessibilityRole="button"
-      accessibilityLabel="Open parked location in Apple Maps"
+      accessibilityLabel="Open parked location in Maps"
+      style={({ pressed }) => ({ opacity: pressed ? 0.85 : 1 })}
     >
       <YStack
         height={MAP_HEIGHT}
@@ -222,6 +204,49 @@ function MapPanel({ lat, lng }: { lat: number; lng: number }) {
       </YStack>
     </Pressable>
   );
+}
+
+/**
+ * Native "open in…" chooser for the parked location: a real iOS action sheet
+ * (matched to the in-app theme), with an Alert fallback off-iOS. Index 0 = Apple
+ * Maps, 1 = Google Maps.
+ */
+function chooseMapsApp(
+  lat: number,
+  lng: number,
+  scheme: "light" | "dark",
+): void {
+  const open = (index: number) => {
+    if (index === 0) void Linking.openURL(appleMapsUrl(lat, lng));
+    else if (index === 1) void openGoogleMaps(lat, lng);
+  };
+  if (Platform.OS === "ios") {
+    ActionSheetIOS.showActionSheetWithOptions(
+      {
+        title: "Open parked location",
+        options: ["Open in Apple Maps", "Open in Google Maps", "Cancel"],
+        cancelButtonIndex: 2,
+        userInterfaceStyle: scheme,
+      },
+      open,
+    );
+  } else {
+    Alert.alert("Open parked location", undefined, [
+      {
+        text: "Apple Maps",
+        onPress: () => {
+          open(0);
+        },
+      },
+      {
+        text: "Google Maps",
+        onPress: () => {
+          open(1);
+        },
+      },
+      { text: "Cancel", style: "cancel" },
+    ]);
+  }
 }
 
 const PIN_LABEL = encodeURIComponent("My vehicle");
