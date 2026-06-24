@@ -68,7 +68,9 @@ app simply shows coordinates instead.
 2. **VW credentials** — copy `.env.example` → `.env` and fill in your
    `VW_USERNAME` / `VW_PASSWORD` / `VW_PIN`.
 3. **Cloudflare Worker** — copy `backend/.env.example` → `backend/.env` and set
-   `CLOUDFLARE_ACCOUNT_ID` (auto-sourced by the deploy script). Then from
+   `CLOUDFLARE_ACCOUNT_ID` (auto-sourced by the deploy script). Enable **Workers
+   AI** on the account (the voice assistant's speech-to-text, GLM-5.2 LLM, and
+   text-to-speech all run through the `AI` binding — no extra API key). Then from
    `backend/`:
    ```bash
    npx wrangler secret bulk .dev.vars              # push secrets to the Worker

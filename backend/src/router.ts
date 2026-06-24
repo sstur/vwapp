@@ -1,5 +1,6 @@
-import { implement, ORPCError } from "@orpc/server";
+import { createRouterClient, implement, ORPCError } from "@orpc/server";
 import { contract, type VehicleDTO } from "@vwapp/contract";
+import { runAssistant, type VehicleCaller } from "./assistant";
 import { seal, sha256Hex, timingSafeEqual, unseal } from "./crypto";
 import type { AppEnv } from "./env";
 import { isMapsConfigured, signSnapshotUrl } from "./maps";
@@ -9,9 +10,13 @@ import {
   getAccountByUserKey,
   getActiveClimateSession,
   getUser,
+  saveAccountSession,
   saveLogin,
   saveSnapshot,
+  setMessageDeleted,
+  setMessageReadOverride,
   startClimateSession,
+  syncMessages,
   updateClimateSession,
   type Db,
   type StoredAccount,
@@ -41,6 +46,7 @@ import {
   vwRefresh,
   vwSetChargeLimit,
   vwSetClimateTemp,
+  type InboxMessage,
   type VwTokens,
 } from "./vw/client";
 
@@ -63,6 +69,10 @@ export interface RouterContext {
   db: Db;
   /** Instant user id from the verified guest token, or null if unauthenticated. */
   userId: string | null;
+  /** Keeps background work (e.g. the voice assistant's fire-and-forget vehicle
+   *  commands) alive past the HTTP response — without it the Worker kills the
+   *  in-flight VW request once we return. Bound from the fetch ExecutionContext. */
+  waitUntil: (promise: Promise<unknown>) => void;
 }
 
 const os = implement(contract).$context<RouterContext>();
@@ -136,46 +146,53 @@ async function verifySavedSession(
   }
 }
 
-const login = os.auth.login.handler(async ({ input, context }) => {
-  const userId = requireUser(context);
-  const userKey = await vwUserKey(input.username);
-
-  // Compare-first: when this VW account already has a server-side session
-  // whose stored password matches the submitted one AND whose tokens still
-  // work against VW, attach the client to it without burning a (throttled)
-  // VW password login. Each branch logs its decision — the difference between
-  // "attach, no VW traffic" and "full password login" is invisible to the
-  // client but is exactly what a login-failure postmortem needs.
+/**
+ * Resolve a working VW session for these credentials WITHOUT persisting or
+ * attaching anything. Compare-first: when a stored account's password matches
+ * AND its saved tokens still work against VW, reuse them with no (throttled) VW
+ * password login; otherwise authenticate for real. Throws UNAUTHORIZED on bad
+ * credentials. Each branch logs its decision — the difference between "reuse, no
+ * VW traffic" and "full password login" is invisible to the client but is
+ * exactly what a login-failure postmortem needs. Shared by `checkCredentials`
+ * (validate + cache the session) and `login` (which also seals the S-PIN and
+ * attaches the client).
+ */
+async function establishSession(
+  context: RouterContext,
+  username: string,
+  password: string,
+): Promise<{ userKey: string; tokens: VwTokens; vehicles: VehicleDTO[] }> {
+  const userKey = await vwUserKey(username);
   const existing = await getAccountByUserKey(context.db, userKey);
   let session: { tokens: VwTokens; vehicles: VehicleDTO[] } | null = null;
   if (
     existing !== null &&
-    (await storedPasswordMatches(context.env, existing, input.password))
+    (await storedPasswordMatches(context.env, existing, password))
   ) {
     session = await verifySavedSession(existing);
     console.log(
-      `[auth] login account=${existing.id}: digest match, saved session ${
+      `[auth] account=${existing.id}: digest match, saved session ${
         session !== null
-          ? "verified — attaching with no VW login"
+          ? "verified — reusing with no VW login"
           : "dead — full login required"
       }`,
     );
   } else {
     console.log(
-      `[auth] login: ${existing === null ? "no stored account for this user key" : `account=${existing.id} digest mismatch`} — full VW login`,
+      `[auth] ${existing === null ? "no stored account for this user key" : `account=${existing.id} digest mismatch`} — full VW login`,
     );
   }
 
   // No session, changed/wrong password, or dead tokens: authenticate with VW
-  // for real, rotating the stored credentials and tokens.
+  // for real.
   if (session === null) {
     let tokens;
     try {
-      tokens = await vwLogin(input.username, input.password);
-      console.log(`[auth] login: VW password login ok`);
+      tokens = await vwLogin(username, password);
+      console.log(`[auth] VW password login ok`);
     } catch (err) {
       console.error(
-        `[auth] login: VW password login FAILED: ${err instanceof Error ? err.message : "unknown"}`,
+        `[auth] VW password login FAILED: ${err instanceof Error ? err.message : "unknown"}`,
       );
       if (err instanceof VwAuthError)
         throw new ORPCError("UNAUTHORIZED", { message: err.message });
@@ -183,7 +200,71 @@ const login = os.auth.login.handler(async ({ input, context }) => {
     }
     session = { tokens, vehicles: await vwGetVehicles(tokens.accessToken) };
   }
+  return { userKey, tokens: session.tokens, vehicles: session.vehicles };
+}
 
+/** The S-PIN currently sealed for this account, if any (and still unsealable). */
+async function storedSpin(
+  env: AppEnv,
+  account: StoredAccount | null,
+): Promise<string | undefined> {
+  if (account === null) return undefined;
+  try {
+    const creds = JSON.parse(
+      await unseal(env.CREDS_ENC_KEY, account.sealed),
+    ) as {
+      spin?: string;
+    };
+    return creds.spin;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Validate the VW credentials BEFORE we ask for the S-PIN (so a wrong password
+ * is caught on the first screen) and CACHE the validated session server-side —
+ * but do NOT attach this client. The backend is now authenticated, yet no
+ * client is "logged in" until `login` links one (with the S-PIN), so the app
+ * can never reach a logged-in state without a PIN, and cancelling at the PIN
+ * step leaves the user logged out. Caching here means the follow-up `login` is
+ * compare-first (no second password login). Any existing S-PIN is preserved, so
+ * re-validating never strips it from the shared account.
+ */
+const checkCredentials = os.auth.checkCredentials.handler(
+  async ({ input, context }) => {
+    requireUser(context);
+    const { userKey, tokens, vehicles } = await establishSession(
+      context,
+      input.username,
+      input.password,
+    );
+    const existing = await getAccountByUserKey(context.db, userKey);
+    const spin = await storedSpin(context.env, existing);
+    const sealed = await seal(
+      context.env.CREDS_ENC_KEY,
+      JSON.stringify({
+        username: input.username,
+        password: input.password,
+        ...(spin !== undefined ? { spin } : {}),
+      }),
+    );
+    await saveAccountSession(context.db, userKey, sealed, tokens, vehicles);
+    return { ok: true as const };
+  },
+);
+
+const login = os.auth.login.handler(async ({ input, context }) => {
+  const userId = requireUser(context);
+  const { userKey, tokens, vehicles } = await establishSession(
+    context,
+    input.username,
+    input.password,
+  );
+
+  // Seal the creds WITH the S-PIN and attach the client (saveLogin). This is
+  // the only place a client becomes "logged in"; checkCredentials may have
+  // already cached the session, but only here is it sealed with the S-PIN.
   const sealed = await seal(
     context.env.CREDS_ENC_KEY,
     JSON.stringify({
@@ -197,8 +278,8 @@ const login = os.auth.login.handler(async ({ input, context }) => {
     userId,
     userKey,
     sealed,
-    session.tokens,
-    session.vehicles,
+    tokens,
+    vehicles,
   );
 
   // Best effort: store an initial snapshot per vehicle so the dashboard has
@@ -209,7 +290,7 @@ const login = os.auth.login.handler(async ({ input, context }) => {
       await saveSnapshot(
         context.db,
         v.id,
-        await vwGetStatus(session.tokens.accessToken, v.vin, v.uuid),
+        await vwGetStatus(tokens.accessToken, v.vin, v.uuid),
       );
     }
   } catch (err) {
@@ -897,6 +978,86 @@ const messages = os.vehicle.messages.handler(async ({ input, context }) => {
   }
 });
 
+const MESSAGES_PAGE_SIZE = 50;
+
+// Mirror VW's inbox into InstantDB so the app reads messages from our DB (never
+// from VW). Same S-PIN/carnet machinery as `messages`, but the result is synced
+// to InstantDB (upsert + prune deletions, preserving read overrides) instead of
+// returned.
+const refreshMessages = os.vehicle.refreshMessages.handler(
+  async ({ input, context }) => {
+    const { db, env } = context;
+    const userId = requireUser(context);
+    const user = await getUser(db, userId);
+    if (user.account === null)
+      throw new ORPCError("UNAUTHORIZED", { message: "not logged in" });
+    const account = user.account;
+    const vehicle = pickVehicle(user, input.uuid);
+    const spin = await requireSpin(env, account);
+
+    let tokens = await ensureTokens(db, env, account);
+    const mint = async (): Promise<string> => {
+      try {
+        return await vwMintSpinSession(tokens, vehicle.uuid, spin);
+      } catch (err) {
+        if (!(err instanceof VwAuthError)) throw err;
+        tokens = await reauth(db, env, account, true);
+        return vwMintSpinSession(tokens, vehicle.uuid, spin);
+      }
+    };
+    let list: InboxMessage[];
+    try {
+      list = await vwGetMessages(
+        await mint(),
+        tokens,
+        vehicle.uuid,
+        MESSAGES_PAGE_SIZE,
+      );
+    } catch (err) {
+      mapVwError(err);
+    }
+    await syncMessages(db, account.id, list, list.length < MESSAGES_PAGE_SIZE);
+    return { ok: true as const };
+  },
+);
+
+// Set our per-message read override in InstantDB (true/false/null). No VW call.
+const setMessageRead = os.vehicle.setMessageRead.handler(
+  async ({ input, context }) => {
+    const { db } = context;
+    const userId = requireUser(context);
+    const user = await getUser(db, userId);
+    if (user.account === null)
+      throw new ORPCError("UNAUTHORIZED", { message: "not logged in" });
+    await setMessageReadOverride(
+      db,
+      user.account.id,
+      input.messageId,
+      input.read,
+    );
+    return { ok: true as const };
+  },
+);
+
+// Soft-delete (or restore) a message in InstantDB. No VW call — the deletion
+// stays on our side and survives VW syncs (see syncMessages / store).
+const setMessageDeletedHandler = os.vehicle.setMessageDeleted.handler(
+  async ({ input, context }) => {
+    const { db } = context;
+    const userId = requireUser(context);
+    const user = await getUser(db, userId);
+    if (user.account === null)
+      throw new ORPCError("UNAUTHORIZED", { message: "not logged in" });
+    await setMessageDeleted(
+      db,
+      user.account.id,
+      input.messageId,
+      input.deleted,
+    );
+    return { ok: true as const };
+  },
+);
+
 /** Best-effort: read fresh status and store a snapshot so the UI reflects a
  *  just-issued change promptly (the cron would otherwise catch it within ~1m). */
 async function snapshotNow(
@@ -939,8 +1100,31 @@ const parkedMapUrl = os.vehicle.parkedMapUrl.handler(
   },
 );
 
+// Voice assistant: transcribe → GLM-5.2 tool loop → speak. The LLM's tools are
+// the existing vehicle procedures, reused verbatim through a server-side router
+// caller (same context) so there's no duplicated VW/S-PIN/climate logic.
+const assistantAsk = os.assistant.ask.handler(async ({ input, context }) => {
+  const userId = requireUser(context);
+  const user = await getUser(context.db, userId);
+  if (user.account === null)
+    throw new ORPCError("UNAUTHORIZED", { message: "not logged in" });
+  const vehicle = pickVehicle(user, input.uuid);
+  // createRouterClient runs procedures in-process with this request's context.
+  const caller = createRouterClient(router, {
+    context,
+  }) as unknown as VehicleCaller;
+  return runAssistant({
+    env: context.env,
+    db: context.db,
+    caller,
+    vehicle,
+    audioBase64: input.audioBase64,
+    waitUntil: context.waitUntil,
+  });
+});
+
 export const router = os.router({
-  auth: { login, me, logout },
+  auth: { checkCredentials, login, me, logout },
   vehicle: {
     refresh,
     command,
@@ -952,8 +1136,12 @@ export const router = os.router({
     setChargeLimit,
     activity,
     messages,
+    refreshMessages,
+    setMessageRead,
+    setMessageDeleted: setMessageDeletedHandler,
     parkedMapUrl,
   },
+  assistant: { ask: assistantAsk },
 });
 
 export type AppRouter = typeof router;

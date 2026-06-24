@@ -8,6 +8,7 @@
     "dev:cron": "while true; do sleep 60; curl -s -o /dev/null --max-time 50 \"http://localhost:8787/cdn-cgi/handler/scheduled\" || true; done",
     "deploy": "set -a; [ -f .env ] && . ./.env; set +a; wrangler deploy",
     "smoke": "node --env-file=../.env --env-file=.dev.vars scripts/smoke.ts",
+    "assistant-smoke": "node --env-file=../.env --env-file=.dev.vars scripts/assistant-smoke.ts",
     "auth-check": "node --env-file=.dev.vars scripts/auth-check.ts",
     "wipe": "node --env-file=.dev.vars scripts/wipe.ts",
     "cf-typegen": "wrangler types",

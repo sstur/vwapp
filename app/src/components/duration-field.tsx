@@ -1,3 +1,5 @@
+import { SfIcon } from "@/components/sf-icon";
+import { useIosColors } from "@/ios-colors";
 import { useThemeToggle } from "@/providers/theme-provider";
 import { DatePicker, Host, Stepper } from "@expo/ui/swift-ui";
 import {
@@ -65,6 +67,17 @@ export function DurationField({
   // The native wheel needs a resolved scheme so it follows the in-app theme
   // override rather than the system appearance.
   const { pref } = useThemeToggle();
+  const c = useIosColors();
+  // iOS system-blue fill for selected/primary buttons. The app drives button
+  // blue through ios-colors (c.blue, via IosButton) — Tamagui's `theme="blue"`
+  // is a different hue AND gives dark label text in light mode. So set the fill
+  // and white label explicitly (white in both themes, like IosButton). pressStyle
+  // pins the fill so press doesn't flash a themed grey.
+  const blueFill = {
+    backgroundColor: c.blue,
+    color: "white" as const,
+    pressStyle: { backgroundColor: c.blue, opacity: 0.85 },
+  };
   const [view, setView] = useState<View>(includePresets ? "chips" : "picker");
   const [committed, setCommitted] = useState<Committed | null>(null);
   const [tab, setTab] = useState<Tab>(
@@ -176,7 +189,7 @@ export function DurationField({
             flex={1}
             px={0}
             disabled={disabled}
-            {...(value === d.min ? { theme: "blue" as const } : {})}
+            {...(value === d.min ? blueFill : {})}
             onPress={() => {
               onChange(d.min);
             }}
@@ -184,14 +197,17 @@ export function DurationField({
             {d.label}
           </Button>
         ))}
+        {/* Icon, not "More…": the text squeezed to truncation in its ~54pt
+            slot. The ellipsis is iOS's standard "more options" affordance. */}
         <Button
           size="$4"
           flex={1}
           px={0}
           disabled={disabled}
           onPress={openPicker}
+          accessibilityLabel="More duration options"
         >
-          More…
+          <SfIcon name="ellipsis" size={20} />
         </Button>
       </XStack>
     );
@@ -206,7 +222,7 @@ export function DurationField({
       <YStack gap="$2">
         <Button
           size="$4"
-          theme="blue"
+          {...blueFill}
           disabled={disabled}
           onPress={reopenPicker}
         >
@@ -243,7 +259,7 @@ export function DurationField({
           flex={1}
           size="$3"
           disabled={disabled}
-          {...(tab === "duration" ? { theme: "blue" as const } : {})}
+          {...(tab === "duration" ? blueFill : {})}
           onPress={() => {
             switchTab("duration");
           }}
@@ -254,7 +270,7 @@ export function DurationField({
           flex={1}
           size="$3"
           disabled={disabled}
-          {...(tab === "end" ? { theme: "blue" as const } : {})}
+          {...(tab === "end" ? blueFill : {})}
           onPress={() => {
             switchTab("end");
           }}
@@ -346,7 +362,7 @@ export function DurationField({
           <Button
             flex={1}
             size="$4"
-            theme="blue"
+            {...blueFill}
             disabled={disabled}
             onPress={use}
           >

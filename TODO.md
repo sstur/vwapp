@@ -229,3 +229,22 @@ curfew / valet alerts that VW evaluates server-side. **Not planned any time
 soon** — we'd still own delivery (VW's push channel stays closed, §4), and our
 own snapshot-diff + activity-feed covers the interesting cases. Documented only
 for completeness.
+
+## Voice assistant — built, remaining follow-ups
+
+The press-and-hold voice assistant is built (`assistant.ask`,
+`backend/src/assistant.ts`, `app/src/components/voice-control.tsx`) — all
+inference on Workers AI (Whisper → GLM-5.2 tools → MeloTTS). Open items:
+
+- **Live-verify the Workers AI shapes against the account.** GLM-5.2 post-dates
+  the installed typings; the binding tool-call response shape and MeloTTS audio
+  encoding are coded to the unified `ChatCompletions*` / TTS schemas but unrun.
+  Confirm with a real call (a `scripts/assistant-smoke.ts` was planned) before
+  trusting it end-to-end.
+- **Latency.** STT + a *reasoning* LLM + TTS in series may be slow; we run
+  `reasoning_effort: "low"` + small `max_completion_tokens`. If too slow,
+  consider a faster model (e.g. a GLM-Flash) or partial/streamed UI.
+- **Voice unlock has no confirmation** (deliberate for now). Revisit if a spoken
+  "are you sure" or a re-auth gate is wanted.
+- **Audio format.** `expo-audio` records m4a/aac; confirm Whisper accepts it
+  (else record/transcode to wav).

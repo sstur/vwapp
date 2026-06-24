@@ -1,11 +1,13 @@
 import { openSummary, strArr, unlockedSummary } from "@/closures";
 import { ChargeControl } from "@/components/charge-control";
 import { ClimateControl } from "@/components/climate-control";
+import { IosButton, IosCard, IosGroup, IosRow } from "@/components/ios-list";
 import { LockControl } from "@/components/lock-control";
-import { SfIcon } from "@/components/sf-icon";
+import { VoiceControl } from "@/components/voice-control";
 import { db } from "@/db";
 import { agoLabel, useNow } from "@/hooks/use-now";
 import { useTransientError } from "@/hooks/use-transient-error";
+import { useIosColors } from "@/ios-colors";
 import { useSession } from "@/providers/session-provider";
 import { orpc } from "@/rpc";
 import { formatMiles } from "@/units";
@@ -17,13 +19,10 @@ import { useEffect, useRef, useState } from "react";
 import { RefreshControl, ScrollView } from "react-native";
 import {
   AnimatePresence,
-  Button,
   Paragraph,
   Spinner,
   Text,
   useTheme,
-  View,
-  XStack,
   YStack,
 } from "tamagui";
 
@@ -31,6 +30,7 @@ type Snapshot = InstaQLEntity<AppSchema, "snapshots">;
 
 export default function Dashboard() {
   const theme = useTheme();
+  const ios = useIosColors();
   const router = useRouter();
   const { signOut, signOutError } = useSession();
 
@@ -62,7 +62,7 @@ export default function Dashboard() {
   const isLoading =
     vehiclesQuery.isLoading ||
     (vehicle !== undefined && snapshotQuery.isLoading);
-  // A failed server logout must be visible too — otherwise tapping "Log out"
+  // A failed server logout must be visible too — otherwise tapping "Sign out"
   // with the server down silently does nothing. The refresh (mutation) error
   // is transient — query errors clear themselves on recovery, but a mutation
   // error would sit there until the next refresh.
@@ -142,7 +142,7 @@ export default function Dashboard() {
             destructive
             onPress={signOut}
           >
-            Log out
+            Sign out
           </Stack.Toolbar.MenuAction>
         </Stack.Toolbar.Menu>
       </Stack.Toolbar>
@@ -151,8 +151,15 @@ export default function Dashboard() {
         alwaysBounceVertical
         contentInsetAdjustmentBehavior="automatic"
         // paddingTop 2, not 16: the native large title already brings its own
-        // bottom margin, and the VIN should read as its subline.
-        contentContainerStyle={{ padding: 16, paddingTop: 2, gap: 16 }}
+        // bottom margin, and the VIN should read as its subline. paddingBottom
+        // clears the floating mic button (VoiceControl) so the last card's
+        // controls aren't trapped under it.
+        contentContainerStyle={{
+          padding: 16,
+          paddingTop: 2,
+          paddingBottom: 120,
+          gap: 16,
+        }}
         refreshControl={
           <RefreshControl
             refreshing={pulling}
@@ -162,9 +169,9 @@ export default function Dashboard() {
         }
       >
         {vehicle !== undefined ? (
-          <Paragraph selectable color="$color10">
+          <Text selectable style={{ color: ios.secondaryLabel, fontSize: 13 }}>
             {vehicle.vin}
-          </Paragraph>
+          </Text>
         ) : null}
 
         {isLoading ? (
@@ -202,12 +209,8 @@ export default function Dashboard() {
         ) : null}
         <AnimatePresence>
           {noSnapshotYet ? (
-            <YStack
+            <IosCard
               key="empty-state"
-              bg="$color2"
-              borderWidth={1}
-              borderColor="$borderColor"
-              rounded="$6"
               p="$4"
               gap="$3"
               items="flex-start"
@@ -224,17 +227,15 @@ export default function Dashboard() {
               {refresh.isPending ? (
                 <Spinner color="$color" />
               ) : (
-                <Button
-                  size="$3"
-                  theme="blue"
+                <IosButton
+                  tone="blue"
+                  label="Get status"
                   onPress={() => {
                     refresh.mutate({});
                   }}
-                >
-                  Get status
-                </Button>
+                />
               )}
-            </YStack>
+            </IosCard>
           ) : null}
         </AnimatePresence>
         {snapshot !== undefined && vehicle !== undefined ? (
@@ -245,6 +246,8 @@ export default function Dashboard() {
           />
         ) : null}
       </ScrollView>
+      {/* Floating press-and-hold voice assistant, over the dashboard. */}
+      {vehicle !== undefined ? <VoiceControl uuid={vehicle.uuid} /> : null}
     </>
   );
 }
@@ -276,16 +279,9 @@ function StatusCards({
       <ChargeControl s={s} uuid={uuid} />
       <LockControl uuid={uuid} locked={s.locked ?? null} />
       <ClimateControl vehicleId={vehicleId} uuid={uuid} />
-      <YStack
-        bg="$color2"
-        borderWidth={1}
-        borderColor="$borderColor"
-        rounded="$6"
-        p="$4"
-        gap="$2"
-      >
-        <Row label="Odometer" value={formatMiles(s.odometerKm)} />
-        <Row
+      <IosGroup>
+        <IosRow label="Odometer" value={formatMiles(s.odometerKm)} />
+        <IosRow
           label="Doors & windows"
           value={sec.text}
           warn={sec.warn}
@@ -294,7 +290,7 @@ function StatusCards({
           }}
         />
         {parked !== null ? (
-          <Row
+          <IosRow
             label="Parked"
             value="Location"
             onPress={() => {
@@ -302,80 +298,31 @@ function StatusCards({
             }}
           />
         ) : null}
-        <Row
+        <IosRow
           label="Updated"
           value={agoLabel(s.capturedAt ?? s.createdAt, now)}
           onPress={() => {
             router.push("/updates");
           }}
         />
-      </YStack>
-      <YStack
-        bg="$color2"
-        borderWidth={1}
-        borderColor="$borderColor"
-        rounded="$6"
-        p="$4"
-        gap="$2"
-      >
-        <Row
+      </IosGroup>
+      <IosGroup>
+        <IosRow
           label="Activity"
           value="View"
           onPress={() => {
             router.push("/activity");
           }}
         />
-        <Row
+        <IosRow
           label="Messages"
           value="View"
           onPress={() => {
             router.push("/messages");
           }}
         />
-      </YStack>
+      </IosGroup>
     </YStack>
-  );
-}
-
-function Row({
-  label,
-  value,
-  warn,
-  onPress,
-}: {
-  label: string;
-  value: string;
-  warn?: boolean;
-  onPress?: () => void;
-}) {
-  const inner = (
-    <XStack justify="space-between" items="center" gap="$3">
-      <Paragraph color="$color10">{label}</Paragraph>
-      <XStack flex={1} justify="flex-end" items="center" gap="$1.5">
-        <Paragraph
-          selectable={onPress === undefined}
-          color={warn === true ? "$yellow10" : "$color"}
-          fontWeight="600"
-          text="right"
-        >
-          {value}
-        </Paragraph>
-        {onPress !== undefined ? (
-          <SfIcon name="chevron.right" size={13} color="$color10" />
-        ) : null}
-      </XStack>
-    </XStack>
-  );
-  if (onPress === undefined) return inner;
-  return (
-    <View
-      onPress={onPress}
-      pressStyle={{ opacity: 0.6 }}
-      hitSlop={6}
-      accessibilityRole="button"
-    >
-      {inner}
-    </View>
   );
 }
 

@@ -1,7 +1,9 @@
-import { Link, Stack } from "expo-router";
-import { Button, H2, YStack } from "tamagui";
+import { IosButton } from "@/components/ios-list";
+import { Stack, useRouter } from "expo-router";
+import { H2, YStack } from "tamagui";
 
 export default function NotFound() {
+  const router = useRouter();
   return (
     <>
       {/* The root stack hides headers; opt back in so the title actually shows. */}
@@ -15,9 +17,13 @@ export default function NotFound() {
         p="$4"
       >
         <H2 color="$color">This screen doesn&apos;t exist.</H2>
-        <Link href="/" asChild>
-          <Button theme="blue">Go home</Button>
-        </Link>
+        <IosButton
+          tone="blue"
+          label="Go home"
+          onPress={() => {
+            router.replace("/");
+          }}
+        />
       </YStack>
     </>
   );

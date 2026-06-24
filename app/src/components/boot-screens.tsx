@@ -3,7 +3,8 @@
  * under the native splash while the session resolves, and the error state
  * when it can't be resolved (server or Instant unreachable).
  */
-import { Button, H2, Paragraph, Spinner, YStack } from "tamagui";
+import { H2, Paragraph, Spinner, YStack } from "tamagui";
+import { IosButton } from "./ios-list";
 
 export function BootLoading() {
   return (
@@ -39,19 +40,19 @@ export function BootError({
       <Paragraph selectable color="$color10" text="center">
         {message}
       </Paragraph>
-      <Button
-        theme="blue"
-        size="$4"
+      <IosButton
+        tone="blue"
         disabled={retrying}
-        opacity={retrying ? 0.6 : 1}
         onPress={onRetry}
-      >
-        {retrying ? <Spinner color="$color" /> : "Try again"}
-      </Button>
+        label={retrying ? "Trying…" : "Try again"}
+      />
       {/* Escape hatch: forget this device's identity (server session survives). */}
-      <Button chromeless size="$3" onPress={onDiscardLocalAuth}>
-        Log out on this device
-      </Button>
+      <IosButton
+        tone="blue"
+        variant="plain"
+        onPress={onDiscardLocalAuth}
+        label="Sign out on this device"
+      />
     </YStack>
   );
 }

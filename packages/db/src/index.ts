@@ -55,6 +55,33 @@ const _schema = i.schema({
        */
       pausedAt: i.number().optional(),
     }),
+    // Mirror of VW's message-center inbox. The Worker syncs VW's messages into
+    // here (the app never talks to VW); the app live-queries these. `read` is
+    // VW's own flag (their source of truth, re-mirrored on every sync);
+    // `readOverride` is OUR per-message override that survives syncs —
+    // absent/null = follow VW, true = read, false = unread. Effective read =
+    // readOverride ?? read. `deletedAt` is OUR soft-delete (set when the user
+    // deletes a message locally) — it survives syncs too and hides the row from
+    // the app, WITHOUT telling VW. Both overrides are preserved by syncMessages
+    // (it only writes VW's own fields on upsert). Rows VW itself stops returning
+    // are hard-pruned (genuine upstream deletions).
+    messages: i.entity({
+      /** VW notificationId — unique within an account. */
+      messageId: i.string().indexed(),
+      title: i.string(),
+      body: i.string().optional(),
+      /** VW message timestamp, epoch ms. */
+      at: i.number().optional(),
+      /** VW's read flag, re-mirrored on each sync. */
+      read: i.boolean(),
+      /** Our override; absent/null = follow VW, else wins over `read`. */
+      readOverride: i.boolean().optional(),
+      /** Our soft-delete marker, epoch ms; absent/null = not deleted. Survives
+          VW syncs; hidden from the app. Never sent to VW. */
+      deletedAt: i.number().optional(),
+      /** Ordering key (= VW `at`, or first-seen time). Indexed for order. */
+      createdAt: i.number().indexed(),
+    }),
     // One row per VW status fetch; the app live-queries the latest of these.
     snapshots: i.entity({
       /** When the Worker stored this row. Indexed for order/prune queries. */
@@ -115,6 +142,15 @@ const _schema = i.schema({
         onDelete: "cascade",
       },
       reverse: { on: "vehicles", has: "many", label: "snapshots" },
+    },
+    messageAccount: {
+      forward: {
+        on: "messages",
+        has: "one",
+        label: "account",
+        onDelete: "cascade",
+      },
+      reverse: { on: "vwAccounts", has: "many", label: "messages" },
     },
     climateSessionVehicle: {
       forward: {

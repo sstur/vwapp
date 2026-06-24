@@ -1,11 +1,12 @@
-import { SfIcon } from "@/components/sf-icon";
+import { IosButton, IosGroup, IosRow } from "@/components/ios-list";
 import { db } from "@/db";
 import { agoLabel, useNow } from "@/hooks/use-now";
+import { useIosColors } from "@/ios-colors";
 import { orpc } from "@/rpc";
 import { useMutation } from "@tanstack/react-query";
 import { Stack } from "expo-router";
 import { ScrollView } from "react-native";
-import { Button, Paragraph, Spinner, Text, XStack, YStack } from "tamagui";
+import { Paragraph, Spinner, Text } from "tamagui";
 
 /**
  * What "Updated" means, a manual refresh (wake) button, and the per-category
@@ -13,6 +14,7 @@ import { Button, Paragraph, Spinner, Text, XStack, YStack } from "tamagui";
  */
 export default function UpdatesScreen() {
   const now = useNow();
+  const ios = useIosColors();
   // Same live-query pair as the dashboard: the refreshed status lands here
   // through the snapshot subscription, not the RPC result.
   const vehiclesQuery = db.useQuery({ vehicles: {} });
@@ -53,28 +55,24 @@ export default function UpdatesScreen() {
         contentInsetAdjustmentBehavior="automatic"
         contentContainerStyle={{ padding: 16, gap: 16 }}
       >
-        <Paragraph color="$color10">
-          “Updated” is the last time your car checked in with VW’s servers — new
-          check-ins are picked up automatically, about once a minute. Refreshing
-          also sends a wake-up signal to the car itself; if it’s asleep it can
-          take a few minutes to come back online, so fresh numbers may keep
-          arriving for a little while after.
+        <Paragraph
+          style={{ color: ios.secondaryLabel, fontSize: 15, lineHeight: 20 }}
+        >
+          “Updated” is when your car last checked in with VW — automatic, about
+          once a minute. Refreshing also wakes the car, so fresh numbers may
+          keep arriving for a few minutes.
         </Paragraph>
 
-        <Button
-          size="$5"
-          theme="blue"
+        <IosButton
+          full
+          tone="blue"
+          icon="arrow.clockwise"
           disabled={refresh.isPending}
-          opacity={refresh.isPending ? 0.6 : 1}
-          {...(refresh.isPending
-            ? { iconAfter: <Spinner color="$color" /> }
-            : { icon: <SfIcon name="arrow.clockwise" /> })}
           onPress={() => {
             refresh.mutate({});
           }}
-        >
-          {refresh.isPending ? "Refreshing…" : "Refresh now"}
-        </Button>
+          label={refresh.isPending ? "Refreshing…" : "Refresh now"}
+        />
 
         {isLoading ? (
           <Spinner
@@ -90,14 +88,7 @@ export default function UpdatesScreen() {
         ) : null}
 
         {snapshot !== undefined ? (
-          <YStack
-            bg="$color2"
-            borderWidth={1}
-            borderColor="$borderColor"
-            rounded="$6"
-            p="$4"
-            gap="$3"
-          >
+          <IosGroup>
             <WhenRow
               label="Car check-in"
               at={snapshot.capturedAt ?? null}
@@ -138,7 +129,7 @@ export default function UpdatesScreen() {
               at={snapshot.createdAt}
               now={now}
             />
-          </YStack>
+          </IosGroup>
         ) : !isLoading && errorMessage == null ? (
           <Paragraph color="$color10">No status stored yet.</Paragraph>
         ) : null}
@@ -157,22 +148,13 @@ function WhenRow({
   at: number | null;
   now: number;
 }) {
+  if (at === null) return <IosRow label={label} value="—" />;
   return (
-    <XStack justify="space-between" items="center" gap="$3">
-      <Paragraph color="$color" fontWeight="600">
-        {label}
-      </Paragraph>
-      {at !== null ? (
-        <YStack items="flex-end">
-          <Paragraph color="$color">{clockLabel(at, now)}</Paragraph>
-          <Paragraph color="$color10" fontSize="$2">
-            {agoLabel(at, now)}
-          </Paragraph>
-        </YStack>
-      ) : (
-        <Paragraph color="$color10">—</Paragraph>
-      )}
-    </XStack>
+    <IosRow
+      label={label}
+      value={clockLabel(at, now)}
+      subValue={agoLabel(at, now)}
+    />
   );
 }
 

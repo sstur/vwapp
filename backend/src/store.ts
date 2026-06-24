@@ -4,7 +4,7 @@ import type { StatusDTO, VehicleDTO } from "@vwapp/contract";
 import schema from "@vwapp/db";
 import type { Sealed } from "./crypto";
 import type { AppEnv } from "./env";
-import type { VwTokens } from "./vw/client";
+import type { InboxMessage, VwTokens } from "./vw/client";
 
 export function getDb(env: AppEnv) {
   return init({
@@ -118,29 +118,22 @@ export async function listAccounts(
   }));
 }
 
-/**
- * Converge on the one VW session for this VW user (keyed by userKey =
- * sha256 of the normalized username): create or update it, refresh creds and
- * tokens, attach the logging-in client, and upsert the garage. If this client
- * was previously attached to a *different* VW account, detach it from that
- * one (and GC it if it has no clients left).
- */
-export async function saveLogin(
+/** Query the account by userKey and compute the create/update plan for it +
+ * its garage. Shared by saveAccountSession (no client attached) and saveLogin
+ * (attaches the client). */
+async function resolveAccountUpsert(
   db: Db,
-  userId: string,
   userKey: string,
   sealed: Sealed,
   tokens: VwTokens,
   vehicles: VehicleDTO[],
-): Promise<StoredVehicle[]> {
-  const [prev, res] = await Promise.all([
-    getUser(db, userId),
-    db.query({ vwAccounts: { $: { where: { userKey } }, vehicles: {} } }),
-  ]);
+) {
+  const res = await db.query({
+    vwAccounts: { $: { where: { userKey } }, vehicles: {} },
+  });
   const existing = res.vwAccounts[0];
   const accountId = existing?.id ?? id();
   const existingVehicles = (existing?.vehicles ?? []).map(toStoredVehicle);
-
   const accountFields = {
     userKey,
     credCiphertext: sealed.ciphertext,
@@ -150,34 +143,93 @@ export async function saveLogin(
     idToken: tokens.idToken,
     tokenExpiresAt: tokens.expiresAt,
   };
-  const accountTx =
-    existing === undefined
-      ? tx(db.tx.vwAccounts[accountId]).create(accountFields)
-      : tx(db.tx.vwAccounts[accountId]).update(accountFields);
-
   const storedVehicles: StoredVehicle[] = vehicles.map((v) => ({
     ...v,
     id: existingVehicles.find((x) => x.uuid === v.uuid)?.id ?? id(),
   }));
+  return {
+    exists: existing !== undefined,
+    accountId,
+    accountFields,
+    storedVehicles,
+    existingVehicles,
+  };
+}
 
+function vehicleUpsertOps(
+  db: Db,
+  accountId: string,
+  storedVehicles: StoredVehicle[],
+  existingVehicles: StoredVehicle[],
+) {
+  return storedVehicles.map((v) => {
+    const fields = {
+      vin: v.vin,
+      uuid: v.uuid,
+      nickname: v.nickname,
+      model: v.model,
+    };
+    const isNew = !existingVehicles.some((x) => x.id === v.id);
+    const vehicleTx = isNew
+      ? tx(db.tx.vehicles[v.id]).create(fields)
+      : tx(db.tx.vehicles[v.id]).update(fields);
+    return vehicleTx.link({ account: accountId });
+  });
+}
+
+/**
+ * Converge on the one VW session for this VW user (keyed by userKey =
+ * sha256 of the normalized username): create or update it, refresh creds and
+ * tokens, and upsert the garage — but DO NOT attach any client. Used to cache a
+ * VW session validated before the S-PIN is known (auth.checkCredentials): the
+ * backend is authenticated, but no client is "logged in" until saveLogin links
+ * one. Never strips an existing S-PIN (the caller preserves it in `sealed`).
+ */
+export async function saveAccountSession(
+  db: Db,
+  userKey: string,
+  sealed: Sealed,
+  tokens: VwTokens,
+  vehicles: VehicleDTO[],
+): Promise<StoredVehicle[]> {
+  const { exists, accountId, accountFields, storedVehicles, existingVehicles } =
+    await resolveAccountUpsert(db, userKey, sealed, tokens, vehicles);
+  const node = tx(db.tx.vwAccounts[accountId]);
+  await db.transact([
+    exists ? node.update(accountFields) : node.create(accountFields),
+    ...vehicleUpsertOps(db, accountId, storedVehicles, existingVehicles),
+  ]);
+  return storedVehicles;
+}
+
+/**
+ * Like saveAccountSession, but also ATTACHES the logging-in client to the
+ * session (this is what makes the client "logged in"). If this client was
+ * previously attached to a *different* VW account, detach it from that one.
+ */
+export async function saveLogin(
+  db: Db,
+  userId: string,
+  userKey: string,
+  sealed: Sealed,
+  tokens: VwTokens,
+  vehicles: VehicleDTO[],
+): Promise<StoredVehicle[]> {
+  const [prev, resolved] = await Promise.all([
+    getUser(db, userId),
+    resolveAccountUpsert(db, userKey, sealed, tokens, vehicles),
+  ]);
+  const { exists, accountId, accountFields, storedVehicles, existingVehicles } =
+    resolved;
+  const node = tx(db.tx.vwAccounts[accountId]);
   await db.transact([
     ...(prev.account !== null && prev.account.id !== accountId
       ? [tx(db.tx.vwAccounts[prev.account.id]).unlink({ users: userId })]
       : []),
-    accountTx.link({ users: userId }),
-    ...storedVehicles.map((v) => {
-      const fields = {
-        vin: v.vin,
-        uuid: v.uuid,
-        nickname: v.nickname,
-        model: v.model,
-      };
-      const isNew = !existingVehicles.some((x) => x.id === v.id);
-      const vehicleTx = isNew
-        ? tx(db.tx.vehicles[v.id]).create(fields)
-        : tx(db.tx.vehicles[v.id]).update(fields);
-      return vehicleTx.link({ account: accountId });
+    (exists ? node.update(accountFields) : node.create(accountFields)).link({
+      users: userId,
     }),
+    ...vehicleUpsertOps(db, accountId, storedVehicles, existingVehicles),
   ]);
   return storedVehicles;
 }
@@ -277,7 +329,7 @@ export async function saveSnapshot(
   return true;
 }
 
-async function getLatestSnapshot(db: Db, vehicleId: string) {
+export async function getLatestSnapshot(db: Db, vehicleId: string) {
   const res = await db.query({
     snapshots: {
       $: {
@@ -445,4 +497,141 @@ export async function endClimateSession(
 ): Promise<void> {
   const active = await getActiveClimateSession(db, vehicleId);
   if (active !== null) await updateClimateSession(db, active.id, { state });
+}
+
+// ---- message center mirror -------------------------------------------------
+
+export interface StoredMessage {
+  id: string;
+  messageId: string;
+  title: string;
+  body: string | null;
+  at: number | null;
+  read: boolean;
+  readOverride: boolean | null;
+  deletedAt: number | null;
+  createdAt: number;
+}
+interface MessageRecord {
+  id: string;
+  messageId: string;
+  title: string;
+  body?: string | undefined;
+  at?: number | undefined;
+  read: boolean;
+  readOverride?: boolean | null | undefined;
+  deletedAt?: number | null | undefined;
+  createdAt: number;
+}
+
+/**
+ * Mirror VW's inbox into our DB: upsert each fetched message (refreshing VW's
+ * fields, including `read`) and prune rows VW no longer returns — i.e. genuine
+ * upstream deletions. Our per-message overrides (`readOverride`, `deletedAt`)
+ * are PRESERVED: the upsert writes only VW's own fields, and Instant's `update`
+ * merges, so our columns are left untouched — a message the user soft-deleted
+ * stays hidden even though VW keeps returning it. `complete` is true when the
+ * fetch returned the whole inbox (fewer rows than the page size); otherwise we
+ * only prune within the fetched window (messages at/after the oldest fetched
+ * one), so older paginated-out messages aren't mistaken for deletions.
+ */
+export async function syncMessages(
+  db: Db,
+  accountId: string,
+  vw: InboxMessage[],
+  complete: boolean,
+): Promise<void> {
+  const res = await db.query({
+    vwAccounts: { $: { where: { id: accountId } }, messages: {} },
+  });
+  const existing = (res.vwAccounts[0]?.messages ?? []) as MessageRecord[];
+  const byMessageId = new Map(existing.map((m) => [m.messageId, m]));
+  const now = Date.now();
+
+  const ops = vw.map((m) => {
+    const prev = byMessageId.get(m.id);
+    const rowId = prev?.id ?? id();
+    const fields = {
+      messageId: m.id,
+      title: m.title,
+      body: m.body,
+      at: m.at,
+      read: m.read,
+      createdAt: prev?.createdAt ?? m.at ?? now,
+    };
+    const node = tx(db.tx.messages[rowId]);
+    return (
+      prev === undefined ? node.create(fields) : node.update(fields)
+    ).link({ account: accountId });
+  });
+
+  const fetchedIds = new Set(vw.map((m) => m.id));
+  const fetchedAts = vw.map((m) => m.at).filter((a): a is number => a !== null);
+  const oldestFetchedAt =
+    fetchedAts.length > 0 ? Math.min(...fetchedAts) : null;
+  const deletions = existing
+    .filter((row) => {
+      if (fetchedIds.has(row.messageId)) return false;
+      return (
+        complete ||
+        (oldestFetchedAt !== null && (row.at ?? 0) >= oldestFetchedAt)
+      );
+    })
+    .map((row) => tx(db.tx.messages[row.id]).delete());
+
+  const all = [...ops, ...deletions];
+  if (all.length > 0) await db.transact(all);
+}
+
+/**
+ * Set (or clear) our per-message read override. `override` true = read,
+ * false = unread, null = follow VW's own flag. No-op if the message is gone.
+ */
+export async function setMessageReadOverride(
+  db: Db,
+  accountId: string,
+  messageId: string,
+  override: boolean | null,
+): Promise<boolean> {
+  const res = await db.query({
+    vwAccounts: {
+      $: { where: { id: accountId } },
+      messages: { $: { where: { messageId } } },
+    },
+  });
+  const row = res.vwAccounts[0]?.messages[0];
+  if (row === undefined) return false;
+  await db.transact(
+    tx(db.tx.messages[row.id]).update({ readOverride: override }),
+  );
+  return true;
+}
+
+/**
+ * Soft-delete (or restore) a message in OUR DB only — never sent to VW. `deleted`
+ * true stamps `deletedAt` so the app hides the row; false clears it. The row is
+ * kept (not removed) so it survives VW re-syncs that still return the message;
+ * it's only truly removed if VW itself stops returning it (see syncMessages).
+ * No-op if the message is gone.
+ */
+export async function setMessageDeleted(
+  db: Db,
+  accountId: string,
+  messageId: string,
+  deleted: boolean,
+): Promise<boolean> {
+  const res = await db.query({
+    vwAccounts: {
+      $: { where: { id: accountId } },
+      messages: { $: { where: { messageId } } },
+    },
+  });
+  const row = res.vwAccounts[0]?.messages[0];
+  if (row === undefined) return false;
+  await db.transact(
+    tx(db.tx.messages[row.id]).update({
+      deletedAt: deleted ? Date.now() : null,
+    }),
+  );
+  return true;
 }

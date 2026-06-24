@@ -7,8 +7,18 @@ import { createTamagui } from "tamagui";
 // moduleResolution "bundler" it silently degrades to `any` (and with it every
 // `useTheme()` value). defaultThemes is the same object reached through a
 // resolvable type path.
+// @tamagui/config v4 defaults the body/heading weight to 300 (light), which
+// reads thin and non-native against iOS (system body is weight 400). Bump the
+// default weight on both fonts to 400 so text matches the platform.
+const fonts = {
+  ...defaultConfig.fonts,
+  body: { ...defaultConfig.fonts.body, weight: { 4: "400" } },
+  heading: { ...defaultConfig.fonts.heading, weight: { 4: "400" } },
+};
+
 export const config = createTamagui({
   ...defaultConfig,
+  fonts,
   themes: defaultThemes,
   settings: { ...defaultConfig.settings, styleCompat: "react-native" },
 });

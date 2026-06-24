@@ -15,7 +15,6 @@ import { useMutation } from "@tanstack/react-query";
 import type { AppSchema } from "@vwapp/db";
 import {
   AnimatePresence,
-  Button,
   H2,
   Paragraph,
   Spinner,
@@ -24,6 +23,7 @@ import {
   XStack,
   YStack,
 } from "tamagui";
+import { IosButton, IosCard } from "./ios-list";
 import { SfIcon } from "./sf-icon";
 
 type Snapshot = InstaQLEntity<AppSchema, "snapshots">;
@@ -62,14 +62,7 @@ export function ChargeControl({ s, uuid }: { s: Snapshot; uuid: string }) {
   const error = useTransientError(start.error ?? stop.error ?? setLimit.error);
 
   return (
-    <YStack
-      bg="$color2"
-      borderWidth={1}
-      borderColor="$borderColor"
-      rounded="$6"
-      p="$4"
-      gap="$3.5"
-    >
+    <IosCard p="$4" gap="$3.5">
       {/* Battery headline */}
       <YStack gap="$2">
         <YStack>
@@ -115,30 +108,24 @@ export function ChargeControl({ s, uuid }: { s: Snapshot; uuid: string }) {
           </Paragraph>
         </YStack>
         {charging ? (
-          <Button
-            size="$4"
-            theme="red"
+          <IosButton
+            tone="red"
             disabled={stop.isPending}
-            opacity={stop.isPending ? 0.6 : 1}
             onPress={() => {
               stop.mutate({ uuid });
             }}
-          >
-            {stop.isPending ? "Stopping…" : "Stop"}
-          </Button>
+            label={stop.isPending ? "Stopping…" : "Stop"}
+          />
         ) : canStart ? (
-          <Button
-            size="$4"
-            theme="green"
-            icon={<SfIcon name="bolt.car.fill" />}
+          <IosButton
+            tone="green"
+            icon="bolt.car.fill"
             disabled={start.isPending}
-            opacity={start.isPending ? 0.6 : 1}
             onPress={() => {
               start.mutate({ uuid });
             }}
-          >
-            {start.isPending ? "Starting…" : "Charge"}
-          </Button>
+            label={start.isPending ? "Starting…" : "Charge"}
+          />
         ) : null}
       </XStack>
 
@@ -192,14 +179,17 @@ export function ChargeControl({ s, uuid }: { s: Snapshot; uuid: string }) {
           </Text>
         ) : null}
       </AnimatePresence>
-    </YStack>
+    </IosCard>
   );
 }
 
 function isCharging(s: Snapshot): boolean {
   if (s.chargeState == null) return false;
-  const state = s.chargeState.toLowerCase();
-  return state.includes("charging") && !state.includes("ready");
+  // Active charging only. VW's idle, target-reached states can END in "Charging"
+  // (e.g. "chargePurposeReachedAndNotConservationCharging"), so matching the
+  // substring flips an idle car to "Charging" between polls — the actively
+  // charging states START with "charging".
+  return s.chargeState.toLowerCase().startsWith("charging");
 }
 
 function stateLabel(s: Snapshot): string {

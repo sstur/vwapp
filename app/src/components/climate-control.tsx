@@ -11,7 +11,6 @@ import {
 import { useRouter } from "expo-router";
 import {
   AnimatePresence,
-  Button,
   Paragraph,
   Spinner,
   Text,
@@ -19,6 +18,7 @@ import {
   XStack,
   YStack,
 } from "tamagui";
+import { IosButton, IosCard } from "./ios-list";
 
 /**
  * Stable key for the climate-start mutation. The Start/Adjust UI lives in the
@@ -99,14 +99,7 @@ export function ClimateControl({
   };
 
   return (
-    <YStack
-      bg="$color2"
-      borderWidth={1}
-      borderColor="$borderColor"
-      rounded="$6"
-      p="$4"
-      gap="$3"
-    >
+    <IosCard p="$4" gap="$3">
       {/* Single row: state on the left, actions inline on the right. A busy
           spinner REPLACES the leading icon (same 26pt slot) — inserted
           mid-row it squeezes the flex label into wrapping. The start state
@@ -153,37 +146,30 @@ export function ClimateControl({
         </YStack>
         {active ? (
           <>
-            <Button
-              size="$4"
-              chromeless
+            <IosButton
+              tone="blue"
+              variant="tinted"
+              label="Adjust"
               onPress={openAdjust}
               disabled={stopCmd.isPending || startPending}
-            >
-              Adjust
-            </Button>
-            <Button
-              size="$4"
-              theme="red"
+            />
+            <IosButton
+              tone="red"
               disabled={stopCmd.isPending || startPending}
-              opacity={stopCmd.isPending ? 0.6 : 1}
               onPress={() => {
                 stopCmd.mutate({ uuid });
               }}
-            >
-              Stop
-            </Button>
+              label="Stop"
+            />
           </>
         ) : (
-          <Button
-            size="$4"
-            theme="blue"
-            icon={<SfIcon name="wind" />}
+          <IosButton
+            tone="blue"
+            icon="wind"
             disabled={startPending}
-            opacity={startPending ? 0.6 : 1}
             onPress={openStart}
-          >
-            Start
-          </Button>
+            label="Start"
+          />
         )}
       </XStack>
 
@@ -203,7 +189,7 @@ export function ClimateControl({
           </Text>
         ) : null}
       </AnimatePresence>
-    </YStack>
+    </IosCard>
   );
 }
 

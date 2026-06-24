@@ -8,6 +8,10 @@
   "compatibility_date": "2026-06-01",
   "compatibility_flags": ["nodejs_compat"],
   "observability": { "enabled": true },
+  // Workers AI powers the voice assistant (STT + GLM-5.2 LLM + TTS), reached via
+  // env.AI. No key: it bills to the deploy account, which must have Workers AI
+  // enabled. In dev, `wrangler dev` proxies these calls to the real Workers AI.
+  "ai": { "binding": "AI" },
   // Poll VW for every stored account every minute (Cloudflare's finest cron
   // granularity); fresh snapshots land in InstantDB and stream to subscribed
   // apps, and this is the latency floor for derived notifications (TODO §4).

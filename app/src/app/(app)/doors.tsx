@@ -5,10 +5,12 @@ import {
   windowLabel,
   windowList,
 } from "@/closures";
+import { IosGroup, IosRow, IosSectionHeader } from "@/components/ios-list";
 import { SfIcon } from "@/components/sf-icon";
 import { VehicleVisual } from "@/components/vehicle-visual";
 import { db } from "@/db";
 import { agoLabel, useNow } from "@/hooks/use-now";
+import { useIosColors } from "@/ios-colors";
 import { Stack } from "expo-router";
 import { ScrollView } from "react-native";
 import { Paragraph, Spinner, Text, View, XStack, YStack } from "tamagui";
@@ -97,45 +99,35 @@ export default function DoorsScreen() {
                 </Paragraph>
               </XStack>
             ) : null}
-            <YStack
-              bg="$color2"
-              borderWidth={1}
-              borderColor="$borderColor"
-              rounded="$6"
-              p="$4"
-              gap="$2"
-            >
-              <Paragraph fontWeight="700">Doors</Paragraph>
-              {doorList(openDoors).map((name) => (
-                <StatusRow
-                  key={name}
-                  label={doorLabel(name)}
-                  status={
-                    openDoors.includes(name)
-                      ? "open"
-                      : unlockedDoors.some((u) => u.startsWith(name))
-                        ? "unlocked"
-                        : "closed"
-                  }
-                />
-              ))}
+            <YStack>
+              <IosSectionHeader>Doors</IosSectionHeader>
+              <IosGroup>
+                {doorList(openDoors).map((name) => (
+                  <StatusRow
+                    key={name}
+                    label={doorLabel(name)}
+                    status={
+                      openDoors.includes(name)
+                        ? "open"
+                        : unlockedDoors.some((u) => u.startsWith(name))
+                          ? "unlocked"
+                          : "closed"
+                    }
+                  />
+                ))}
+              </IosGroup>
             </YStack>
-            <YStack
-              bg="$color2"
-              borderWidth={1}
-              borderColor="$borderColor"
-              rounded="$6"
-              p="$4"
-              gap="$2"
-            >
-              <Paragraph fontWeight="700">Windows</Paragraph>
-              {windowList(openWindows).map((name) => (
-                <StatusRow
-                  key={name}
-                  label={windowLabel(name)}
-                  status={openWindows.includes(name) ? "open" : "closed"}
-                />
-              ))}
+            <YStack>
+              <IosSectionHeader>Windows</IosSectionHeader>
+              <IosGroup>
+                {windowList(openWindows).map((name) => (
+                  <StatusRow
+                    key={name}
+                    label={windowLabel(name)}
+                    status={openWindows.includes(name) ? "open" : "closed"}
+                  />
+                ))}
+              </IosGroup>
             </YStack>
             <Paragraph color="$color10" fontSize="$2" self="center">
               Updated {agoLabel(snapshot.capturedAt ?? snapshot.createdAt, now)}
@@ -147,26 +139,18 @@ export default function DoorsScreen() {
   );
 }
 
-const STATUS_STYLES = {
-  open: { text: "Open", color: "$red10", weight: "600" },
-  unlocked: { text: "Unlocked", color: "$yellow10", weight: "600" },
-  closed: { text: "Closed", color: "$color10", weight: "400" },
-} as const;
-
 function StatusRow({
   label,
   status,
 }: {
   label: string;
-  status: keyof typeof STATUS_STYLES;
+  status: "open" | "unlocked" | "closed";
 }) {
-  const s = STATUS_STYLES[status];
-  return (
-    <XStack justify="space-between" items="center" gap="$3">
-      <Paragraph color="$color">{label}</Paragraph>
-      <Paragraph color={s.color} fontWeight={s.weight}>
-        {s.text}
-      </Paragraph>
-    </XStack>
-  );
+  const c = useIosColors();
+  const style = {
+    open: { text: "Open", color: c.red },
+    unlocked: { text: "Unlocked", color: c.warn },
+    closed: { text: "Closed", color: undefined },
+  }[status];
+  return <IosRow label={label} value={style.text} valueColor={style.color} />;
 }

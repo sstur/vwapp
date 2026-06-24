@@ -34,6 +34,11 @@ const rules = {
       view: "auth.id in data.ref('vehicle.account.users.id')",
     },
   },
+  messages: {
+    allow: {
+      view: "auth.id in data.ref('account.users.id')",
+    },
+  },
 } satisfies InstantRules;
 
 export default rules;

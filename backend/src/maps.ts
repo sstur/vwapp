@@ -2,6 +2,8 @@
 import type { AppEnv } from "./env";
 
 const SNAPSHOT_URL = "https://snapshot.apple-mapkit.com/api/v1/snapshot";
+/** Apple Maps Server API (reverse geocoding) base. */
+const SERVER_API = "https://maps-api.apple.com/v1";
 /** MapKit token lifetime; the app refetches the URL before this elapses. */
 const TOKEN_TTL_SEC = 30 * 60;
 
@@ -117,4 +119,43 @@ export async function signSnapshotUrl(
   params.set("token", await mintToken(env));
 
   return `${SNAPSHOT_URL}?${params.toString()}`;
+}
+
+/**
+ * Reverse-geocode a coordinate to a short human-readable address via Apple's
+ * Maps Server API (used by the voice assistant for "where am I parked"). Returns
+ * null when Maps isn't configured or the lookup fails — callers fall back to a
+ * time-based answer. Two hops: exchange the MapKit JWT for a server access token,
+ * then call reverseGeocode.
+ */
+export async function reverseGeocode(
+  env: AppEnv,
+  lat: number,
+  lng: number,
+): Promise<string | null> {
+  if (!isMapsConfigured(env)) return null;
+  try {
+    const jwt = await mintToken(env);
+    const tokenRes = await fetch(`${SERVER_API}/token`, {
+      headers: { Authorization: `Bearer ${jwt}` },
+    });
+    if (!tokenRes.ok) return null;
+    const { accessToken } = await tokenRes.json<{ accessToken: string }>();
+
+    const res = await fetch(
+      `${SERVER_API}/reverseGeocode?loc=${String(lat)},${String(lng)}&lang=en-US`,
+      { headers: { Authorization: `Bearer ${accessToken}` } },
+    );
+    if (!res.ok) return null;
+    const data = await res.json<{
+      results?: { name?: string; formattedAddressLines?: string[] }[];
+    }>();
+    const first = data.results?.[0];
+    if (first === undefined) return null;
+    const lines = first.formattedAddressLines;
+    if (lines !== undefined && lines.length > 0) return lines.join(", ");
+    return first.name ?? null;
+  } catch {
+    return null;
+  }
 }

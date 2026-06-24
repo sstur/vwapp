@@ -43,9 +43,13 @@ export const statusSchema = z.object({
 });
 export type StatusDTO = z.infer<typeof statusSchema>;
 
-const credentialsSchema = z.object({
+/** Just the VW account credentials — what's validated before we ask for the S-PIN. */
+const loginCredentialsSchema = z.object({
   username: z.string().min(1),
   password: z.string().min(1),
+});
+
+const credentialsSchema = loginCredentialsSchema.extend({
   /** myVW security PIN (4 digits), required for remote commands like lock/unlock. */
   spin: z.string().regex(/^\d{4,6}$/, "S-PIN must be 4–6 digits"),
 });
@@ -107,10 +111,21 @@ export type ClimateStartInput = z.infer<typeof climateStartSchema>;
 export const contract = {
   auth: {
     /**
+     * Validate VW credentials (username + password) — the first step of the
+     * two-step sign-in, so a wrong password is caught before the user is asked
+     * for their S-PIN. Caches the validated VW session server-side but does NOT
+     * log the client in (no S-PIN yet), so the follow-up `login` needs no second
+     * VW password login. Throws UNAUTHORIZED on bad credentials.
+     */
+    checkCredentials: oc
+      .input(loginCredentialsSchema)
+      .output(z.object({ ok: z.literal(true) })),
+    /**
      * Attach this client to the shared VW session. Reuses the saved session
      * when the submitted credentials match the stored copy and its tokens
      * still work against VW; otherwise performs a real VW login (throttled
-     * by VW) and rotates the stored credentials/tokens.
+     * by VW) and rotates the stored credentials/tokens. This is the only step
+     * that persists the account — always with the S-PIN.
      */
     login: oc
       .input(credentialsSchema)
@@ -181,10 +196,45 @@ export const contract = {
     activity: oc
       .input(z.object({ uuid: z.string().optional() }))
       .output(z.object({ events: z.array(activityEventSchema) })),
-    /** myVW message-center inbox. S-PIN-gated read. */
+    /** myVW message-center inbox. S-PIN-gated read. (Used in-process by the
+        voice assistant; the app reads messages from InstantDB instead.) */
     messages: oc
       .input(z.object({ uuid: z.string().optional() }))
       .output(z.object({ messages: z.array(inboxMessageSchema) })),
+    /**
+     * Sync the message-center inbox from VW into InstantDB (mirror): upsert
+     * messages, preserve our read overrides, and prune deletions. The app calls
+     * this to refresh, then reads the messages from InstantDB — it never sees
+     * VW directly. S-PIN-gated.
+     */
+    refreshMessages: oc
+      .input(z.object({ uuid: z.string().optional() }))
+      .output(z.object({ ok: z.literal(true) })),
+    /**
+     * Set our per-message read override in InstantDB: true = read, false =
+     * unread, null = follow VW's own flag. No VW traffic.
+     */
+    setMessageRead: oc
+      .input(
+        z.object({
+          messageId: z.string().min(1),
+          read: z.boolean().nullable(),
+        }),
+      )
+      .output(z.object({ ok: z.literal(true) })),
+    /**
+     * Soft-delete (or restore) a message in our DB only — never sent to VW.
+     * `deleted` true hides it from the app and survives VW re-syncs; false
+     * restores it. No VW traffic.
+     */
+    setMessageDeleted: oc
+      .input(
+        z.object({
+          messageId: z.string().min(1),
+          deleted: z.boolean(),
+        }),
+      )
+      .output(z.object({ ok: z.literal(true) })),
     /**
      * A signed Apple Maps Web Snapshot URL for the parked location. The Worker
      * signs it with the server-held MapKit key (the .p8 never leaves the
@@ -196,6 +246,32 @@ export const contract = {
       // url is null when the backend has no Apple Maps signing keys configured
       // (the parked-map feature is optional — the app falls back to coords).
       .output(z.object({ url: z.string().nullable() })),
+  },
+  assistant: {
+    /**
+     * Voice assistant: send a short recorded voice note (base64 audio) and get
+     * back a transcript, a short reply, and synthesized speech (base64 audio,
+     * null if TTS failed). The Worker runs the whole chain on Cloudflare
+     * Workers AI — speech-to-text, an LLM that calls vehicle tools (the same
+     * status reads and S-PIN-gated commands the other procedures expose), and
+     * text-to-speech. Defaults to the single vehicle when uuid is omitted.
+     */
+    ask: oc
+      .input(
+        z.object({
+          uuid: z.string().optional(),
+          /** Base64-encoded recorded audio (m4a/aac from the app recorder). */
+          audioBase64: z.string().min(1),
+        }),
+      )
+      .output(
+        z.object({
+          transcript: z.string(),
+          reply: z.string(),
+          /** Base64 WAV (PCM) of the spoken reply, or null if TTS was unavailable. */
+          audioBase64: z.string().nullable(),
+        }),
+      ),
   },
 };
 

@@ -1,4 +1,5 @@
 import { BootError, BootLoading } from "@/components/boot-screens";
+import { LoginFlowProvider } from "@/providers/login-flow";
 import { SessionProvider, useSession } from "@/providers/session-provider";
 import { ThemeProvider, useThemeToggle } from "@/providers/theme-provider";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -10,6 +11,7 @@ import {
 } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import { useEffect } from "react";
+import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { useTheme } from "tamagui";
@@ -84,7 +86,17 @@ function RootNavigator() {
           <Stack.Screen name="(app)" />
         </Stack.Protected>
         <Stack.Protected guard={!loggedIn}>
+          {/* `login` declared first so it's the group's initial route; the
+              S-PIN screen is pushed on top after credentials validate. */}
           <Stack.Screen name="login" />
+          <Stack.Screen
+            name="login-pin"
+            options={{
+              headerShown: true,
+              headerTransparent: true,
+              headerTitle: "",
+            }}
+          />
         </Stack.Protected>
       </Stack>
     </NavThemeProvider>
@@ -93,16 +105,23 @@ function RootNavigator() {
 
 export default function RootLayout() {
   return (
-    <ThemeProvider>
-      <SafeAreaProvider>
-        <KeyboardProvider>
-          <QueryClientProvider client={queryClient}>
-            <SessionProvider>
-              <RootNavigator />
-            </SessionProvider>
-          </QueryClientProvider>
-        </KeyboardProvider>
-      </SafeAreaProvider>
-    </ThemeProvider>
+    // GestureHandlerRootView must wrap the whole app (and fill it) for
+    // react-native-gesture-handler gestures — e.g. the swipe-to-action rows on
+    // the Messages screen — to receive touches.
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <ThemeProvider>
+        <SafeAreaProvider>
+          <KeyboardProvider>
+            <QueryClientProvider client={queryClient}>
+              <SessionProvider>
+                <LoginFlowProvider>
+                  <RootNavigator />
+                </LoginFlowProvider>
+              </SessionProvider>
+            </QueryClientProvider>
+          </KeyboardProvider>
+        </SafeAreaProvider>
+      </ThemeProvider>
+    </GestureHandlerRootView>
   );
 }

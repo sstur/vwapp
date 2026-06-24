@@ -1,31 +1,39 @@
+import { IosButton } from "@/components/ios-list";
+import { useFocusOnScreen } from "@/hooks/use-focus-on-screen";
+import { useLoginFlow } from "@/providers/login-flow";
 import { orpc } from "@/rpc";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation } from "@tanstack/react-query";
+import { useRouter } from "expo-router";
 import { useState } from "react";
 import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
-import { Button, H1, Input, Paragraph, Text, YStack } from "tamagui";
+import { H1, Input, Paragraph, Text, YStack } from "tamagui";
 
+/**
+ * Step 1 of sign-in: VW account credentials. Validates username + password with
+ * VW (auth.checkCredentials — no login/persist yet) so a wrong password is
+ * caught here, then hands them to the S-PIN screen. Kept to a clean
+ * username + password form (no second secure field) so iOS offers to fill the
+ * saved email and to save the credential after submit.
+ */
 export default function Login() {
-  const queryClient = useQueryClient();
+  const router = useRouter();
+  const { setCredentials } = useLoginFlow();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
-  const [spin, setSpin] = useState("");
+  const emailRef = useFocusOnScreen();
 
-  const login = useMutation(
-    orpc.auth.login.mutationOptions({
-      onSuccess: async () => {
-        // Flipping auth.me to logged-in makes the layout guard swap to the dashboard.
-        await queryClient.invalidateQueries();
+  const check = useMutation(
+    orpc.auth.checkCredentials.mutationOptions({
+      onSuccess: () => {
+        setCredentials({ username, password });
+        router.push("/login-pin");
       },
     }),
   );
 
-  const canSubmit =
-    username !== "" &&
-    password !== "" &&
-    /^\d{4,6}$/.test(spin) &&
-    !login.isPending;
+  const canSubmit = username !== "" && password !== "" && !check.isPending;
   const submit = () => {
-    if (canSubmit) login.mutate({ username, password, spin });
+    if (canSubmit) check.mutate({ username, password });
   };
 
   return (
@@ -50,16 +58,28 @@ export default function Login() {
           gap: 16,
         }}
       >
-        <H1 color="$color">My ID. Buzz</H1>
+        {/* Generic VW sign-in — this account works for any myVW vehicle
+            (ID. Buzz, ID.4, …), so the title must not assume a model. */}
+        <H1 size="$9" color="$color">
+          Sign in
+        </H1>
         <Paragraph color="$color10">
-          Sign in with your Volkswagen (myVW) account.
+          Use your Volkswagen (myVW) account.
         </Paragraph>
+        {/* textContentType username/password (iOS) + autoComplete (Android) so
+            the OS offers to fill the saved email and to save the credential
+            after a successful sign-in. The email field is the "username" half
+            of the pair iOS associates with the password. */}
         <Input
+          ref={emailRef}
           size="$5"
           placeholder="Email"
           autoCapitalize="none"
           autoCorrect={false}
           keyboardType="email-address"
+          textContentType="username"
+          autoComplete="email"
+          returnKeyType="next"
           value={username}
           onChangeText={setUsername}
         />
@@ -69,24 +89,14 @@ export default function Login() {
           secureTextEntry
           autoCapitalize="none"
           autoCorrect={false}
+          textContentType="password"
+          autoComplete="current-password"
+          returnKeyType="go"
+          onSubmitEditing={submit}
           value={password}
           onChangeText={setPassword}
         />
-        <Input
-          size="$5"
-          placeholder="S-PIN (4-digit)"
-          secureTextEntry
-          keyboardType="number-pad"
-          maxLength={6}
-          returnKeyType="go"
-          onSubmitEditing={submit}
-          value={spin}
-          onChangeText={setSpin}
-        />
-        <Paragraph color="$color10" fontSize="$2">
-          Your myVW security PIN — needed to lock and unlock the doors remotely.
-        </Paragraph>
-        {login.error ? (
+        {check.error ? (
           <Text
             selectable
             color="$red10"
@@ -94,12 +104,16 @@ export default function Login() {
             animateOnly={["opacity"]}
             enterStyle={{ opacity: 0 }}
           >
-            {login.error.message}
+            {check.error.message}
           </Text>
         ) : null}
-        <Button size="$5" theme="blue" disabled={!canSubmit} onPress={submit}>
-          {login.isPending ? "Signing in…" : "Sign in"}
-        </Button>
+        <IosButton
+          full
+          tone="blue"
+          disabled={!canSubmit}
+          onPress={submit}
+          label={check.isPending ? "Checking…" : "Continue"}
+        />
       </KeyboardAwareScrollView>
     </YStack>
   );

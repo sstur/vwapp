@@ -1,12 +1,12 @@
 import { snapshotUpdates, type UpdateEvent } from "@/activity-events";
-import { SfIcon } from "@/components/sf-icon";
+import { IosGroup, IosRow } from "@/components/ios-list";
 import { db } from "@/db";
 import { orpc } from "@/rpc";
 import { useQuery } from "@tanstack/react-query";
 import type { ActivityEventDTO } from "@vwapp/contract";
 import { Stack } from "expo-router";
 import { RefreshControl, ScrollView } from "react-native";
-import { Paragraph, Spinner, Text, useTheme, XStack, YStack } from "tamagui";
+import { Paragraph, Spinner, Text, useTheme } from "tamagui";
 
 /** How many stored snapshots to diff for data-update events. */
 const SNAPSHOT_WINDOW = 500;
@@ -81,9 +81,13 @@ export default function ActivityScreen() {
         {!isPending && errorMessage === undefined && events.length === 0 ? (
           <Paragraph color="$color10">No recent activity.</Paragraph>
         ) : null}
-        {events.map((e, i) => (
-          <ActivityRow key={`${String(e.at)}-${String(i)}`} e={e} />
-        ))}
+        {events.length > 0 ? (
+          <IosGroup>
+            {events.map((e, i) => (
+              <ActivityRow key={`${String(e.at)}-${String(i)}`} e={e} />
+            ))}
+          </IosGroup>
+        ) : null}
       </ScrollView>
     </>
   );
@@ -128,28 +132,13 @@ function iconForVwType(type: string | null): Row["icon"] {
 
 function ActivityRow({ e }: { e: Row }) {
   return (
-    <XStack gap="$3" items="flex-start">
-      <SfIcon name={e.icon} color="$color10" size={20} mt={2} />
-      <YStack flex={1} gap="$0.5">
-        <Paragraph color="$color" fontWeight="600">
-          {e.title}
-        </Paragraph>
-        {e.description != null && e.description !== "" ? (
-          <Paragraph color="$color10" fontSize="$2">
-            {e.description}
-          </Paragraph>
-        ) : null}
-      </YStack>
-      {e.at != null ? (
-        <Paragraph
-          color="$color10"
-          fontSize="$2"
-          fontVariant={["tabular-nums"]}
-        >
-          {formatWhen(e.at)}
-        </Paragraph>
-      ) : null}
-    </XStack>
+    <IosRow
+      icon={e.icon}
+      label={e.title}
+      subtitle={e.description ?? undefined}
+      value={e.at != null ? formatWhen(e.at) : undefined}
+      multiline
+    />
   );
 }
 

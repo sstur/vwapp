@@ -149,8 +149,10 @@ function windowName(w: string): string {
   return w === "sun roof" ? "Sunroof" : `${windowLabel(w)} window`;
 }
 
-/** Same reading of VW's state as the dashboard charge card's `isCharging`. */
+/** Same reading of VW's state as the dashboard charge card's `isCharging`.
+ *  Active charging only: VW's idle, target-reached states can END in "Charging"
+ *  (e.g. "chargePurposeReachedAndNotConservationCharging"), so a substring match
+ *  wrongly flags them — the actively-charging states START with "charging". */
 function isChargingState(state: string): boolean {
-  const s = state.toLowerCase();
-  return s.includes("charging") && !s.includes("ready");
+  return state.toLowerCase().startsWith("charging");
 }

@@ -2,15 +2,8 @@ import { useTransientError } from "@/hooks/use-transient-error";
 import { orpc } from "@/rpc";
 import { useMutation } from "@tanstack/react-query";
 import { Alert } from "react-native";
-import {
-  AnimatePresence,
-  Button,
-  Paragraph,
-  Spinner,
-  Text,
-  XStack,
-  YStack,
-} from "tamagui";
+import { AnimatePresence, Paragraph, Spinner, Text, XStack } from "tamagui";
+import { IosButton, IosCard } from "./ios-list";
 import { SfIcon } from "./sf-icon";
 
 /**
@@ -75,14 +68,7 @@ export function LockControl({
     shownLocked === false ? "$red10" : shownLocked ? "$green10" : "$color10";
 
   return (
-    <YStack
-      bg="$color2"
-      borderWidth={1}
-      borderColor="$borderColor"
-      rounded="$6"
-      p="$4"
-      gap="$3"
-    >
+    <IosCard p="$4" gap="$3">
       {/* Single row: state on the left, the opposite action inline on the
           right (both actions when the state is unknown, so the user is never
           stuck). */}
@@ -93,30 +79,24 @@ export function LockControl({
         </Paragraph>
         {pending ? <Spinner color="$color10" /> : null}
         {shownLocked !== false ? (
-          <Button
-            size="$4"
-            theme="blue"
+          <IosButton
+            tone="blue"
+            icon="lock.open.fill"
             disabled={pending}
-            opacity={pending ? 0.6 : 1}
-            icon={<SfIcon name="lock.open.fill" />}
             onPress={confirmUnlock}
-          >
-            Unlock
-          </Button>
+            label="Unlock"
+          />
         ) : null}
         {shownLocked !== true ? (
-          <Button
-            size="$4"
-            theme="green"
+          <IosButton
+            tone="green"
+            icon="lock.fill"
             disabled={pending}
-            opacity={pending ? 0.6 : 1}
-            icon={<SfIcon name="lock.fill" />}
             onPress={() => {
               run("lock");
             }}
-          >
-            Lock
-          </Button>
+            label="Lock"
+          />
         ) : null}
       </XStack>
 
@@ -136,6 +116,6 @@ export function LockControl({
           </Text>
         ) : null}
       </AnimatePresence>
-    </YStack>
+    </IosCard>
   );
 }

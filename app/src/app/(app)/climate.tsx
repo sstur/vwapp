@@ -1,5 +1,6 @@
 import { climateStartKey } from "@/components/climate-control";
 import { DurationField } from "@/components/duration-field";
+import { IosButton } from "@/components/ios-list";
 import { useThemeToggle } from "@/providers/theme-provider";
 import { orpc } from "@/rpc";
 import { Host, Stepper } from "@expo/ui/swift-ui";
@@ -13,7 +14,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useState } from "react";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { Button, H2, Paragraph, Spinner, Text, XStack, YStack } from "tamagui";
+import { H2, Paragraph, Spinner, Text, XStack, YStack } from "tamagui";
 
 const TEMP_MIN = 60;
 const TEMP_MAX = 85;
@@ -90,10 +91,11 @@ export default function ClimateSheet() {
   const tempF = userTempF ?? seedTempF ?? DEFAULT_TEMP;
 
   return (
-    // bg matches the form sheet's contentStyle so the grabber area and content
-    // share one themed surface; fitToContents sizes the sheet to this YStack,
-    // so it must NOT be a ScrollView (that measures as zero height).
-    <YStack bg="$background" p="$4" pb={Math.max(insets.bottom, 16)} gap="$4">
+    // The sheet's surface colour comes from the form sheet's contentStyle (the
+    // solid frosted-material grey set in (app)/_layout.tsx); this YStack stays
+    // transparent. fitToContents sizes the sheet to it, so it must NOT be a
+    // ScrollView (that measures as zero height).
+    <YStack p="$4" pb={Math.max(insets.bottom, 16)} gap="$4">
       <Paragraph size="$6" fontWeight="700" color="$color">
         {adjust ? "Adjust climate" : "Start climate"}
       </Paragraph>
@@ -162,14 +164,10 @@ export default function ClimateSheet() {
         </Paragraph>
       ) : null}
 
-      <Button
-        size="$5"
-        theme="blue"
+      <IosButton
+        full
+        tone="blue"
         disabled={startCmd.isPending || !tempReady}
-        opacity={startCmd.isPending || !tempReady ? 0.6 : 1}
-        {...(startCmd.isPending
-          ? { iconAfter: <Spinner color="$color" /> }
-          : {})}
         onPress={() => {
           const effectiveMin =
             endMs !== null
@@ -180,9 +178,8 @@ export default function ClimateSheet() {
               : durationMin;
           startCmd.mutate({ uuid, tempF, durationMin: effectiveMin });
         }}
-      >
-        {startCmd.isPending ? "Starting…" : adjust ? "Update" : "Start"}
-      </Button>
+        label={startCmd.isPending ? "Starting…" : adjust ? "Update" : "Start"}
+      />
       {startCmd.error ? (
         <Text selectable color="$red10" fontSize="$2">
           {startCmd.error.message}

@@ -16,7 +16,11 @@ const handler = new RPCHandler(router, {
 });
 
 export default {
-  async fetch(request: Request, env: AppEnv): Promise<Response> {
+  async fetch(
+    request: Request,
+    env: AppEnv,
+    ctx: ExecutionContext,
+  ): Promise<Response> {
     const db = getDb(env);
 
     // The app authenticates with its Instant guest refresh token; verifying it
@@ -36,7 +40,7 @@ export default {
 
     const { matched, response } = await handler.handle(request, {
       prefix: "/rpc",
-      context: { env, db, userId },
+      context: { env, db, userId, waitUntil: ctx.waitUntil.bind(ctx) },
     });
     if (matched) return response;
     return new Response("Not found", { status: 404 });

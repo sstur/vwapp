@@ -1,6 +1,8 @@
+import { IosGroup, IosRow } from "@/components/ios-list";
 import { SfIcon } from "@/components/sf-icon";
 import { db } from "@/db";
 import { agoLabel, useNow } from "@/hooks/use-now";
+import { useIosColors } from "@/ios-colors";
 import { useThemeToggle } from "@/providers/theme-provider";
 import { orpc } from "@/rpc";
 import { useQuery } from "@tanstack/react-query";
@@ -16,7 +18,7 @@ import {
   ScrollView,
   useWindowDimensions,
 } from "react-native";
-import { Paragraph, Spinner, Text, XStack, YStack } from "tamagui";
+import { Paragraph, Spinner, Text, YStack } from "tamagui";
 
 const MAP_HEIGHT = 200;
 
@@ -27,6 +29,7 @@ const MAP_HEIGHT = 200;
  */
 export default function ParkedScreen() {
   const now = useNow();
+  const ios = useIosColors();
   // Same live-query pair as the dashboard.
   const vehiclesQuery = db.useQuery({ vehicles: {} });
   const vehicle = vehiclesQuery.data?.vehicles[0];
@@ -97,39 +100,22 @@ export default function ParkedScreen() {
           >
             <MapPanel lat={parked.lat} lng={parked.lng} />
 
-            <YStack
-              bg="$color2"
-              borderWidth={1}
-              borderColor="$borderColor"
-              rounded="$6"
-              p="$4"
-              gap="$3"
-            >
-              <XStack items="center" gap="$3">
-                <SfIcon name="mappin.and.ellipse" color="$blue10" size={26} />
-                <YStack flex={1}>
-                  <Paragraph color="$color" fontWeight="700" fontSize="$6">
-                    Last parked
-                  </Paragraph>
-                  {parked.at !== null ? (
-                    <Paragraph color="$color10" fontSize="$2">
-                      {`${clockLabel(parked.at, now)} · ${agoLabel(parked.at, now)}`}
-                    </Paragraph>
-                  ) : null}
-                </YStack>
-              </XStack>
-              <XStack justify="space-between" items="center" gap="$3">
-                <Paragraph color="$color10">Coordinates</Paragraph>
-                <Paragraph
-                  selectable
-                  color="$color"
-                  fontWeight="600"
-                  fontVariant={["tabular-nums"]}
-                >
-                  {`${parked.lat.toFixed(5)}, ${parked.lng.toFixed(5)}`}
-                </Paragraph>
-              </XStack>
-            </YStack>
+            <IosGroup>
+              <IosRow
+                icon="mappin.and.ellipse"
+                iconColor={ios.blue}
+                label="Last parked"
+                subtitle={
+                  parked.at !== null
+                    ? `${clockLabel(parked.at, now)} · ${agoLabel(parked.at, now)}`
+                    : undefined
+                }
+              />
+              <IosRow
+                label="Coordinates"
+                value={`${parked.lat.toFixed(5)}, ${parked.lng.toFixed(5)}`}
+              />
+            </IosGroup>
           </YStack>
         ) : null}
       </ScrollView>
@@ -174,13 +160,7 @@ function MapPanel({ lat, lng }: { lat: number; lng: number }) {
       accessibilityLabel="Open parked location in Maps"
       style={({ pressed }) => ({ opacity: pressed ? 0.85 : 1 })}
     >
-      <YStack
-        height={MAP_HEIGHT}
-        rounded="$6"
-        overflow="hidden"
-        borderWidth={1}
-        borderColor="$borderColor"
-      >
+      <YStack height={MAP_HEIGHT} rounded={10} overflow="hidden">
         {map.data?.url != null ? (
           <Image
             source={{ uri: map.data.url }}

@@ -1,3 +1,8 @@
+import {
+  clearStoredAuthToken,
+  getStoredAuthToken,
+  setStoredAuthToken,
+} from "@/auth-storage";
 import { db } from "@/db";
 import { orpc } from "@/rpc";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -60,15 +65,29 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const auth = db.useAuth();
 
   // Guest sign-in, retried via the `attempt` nonce. The in-flight ref guards
-  // against double sign-ins (two guests for one device).
+  // against double sign-ins (two guests for one device). We first try to restore
+  // a refresh token kept in the keychain (survives reinstall — see
+  // auth-storage.ts); only with no usable saved token do we mint a brand-new
+  // guest identity.
   const [guestError, setGuestError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
   const signingIn = useRef(false);
   useEffect(() => {
     if (auth.isLoading || auth.user != null || signingIn.current) return;
     signingIn.current = true;
-    db.auth
-      .signInAsGuest()
+    void (async () => {
+      const saved = await getStoredAuthToken();
+      if (saved !== null) {
+        try {
+          await db.auth.signInWithToken(saved);
+          return;
+        } catch {
+          // The saved token is stale/invalid — drop it and start fresh.
+          await clearStoredAuthToken();
+        }
+      }
+      await db.auth.signInAsGuest();
+    })()
       .catch((err: unknown) => {
         setGuestError(errorMessage(err));
       })
@@ -76,6 +95,13 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         signingIn.current = false;
       });
   }, [auth.isLoading, auth.user, attempt]);
+
+  // Mirror the live identity's refresh token into the keychain so a reinstall
+  // can restore it. Cheap and idempotent — writes the same value most launches.
+  useEffect(() => {
+    const token = auth.user?.refresh_token;
+    if (token != null) void setStoredAuthToken(token);
+  }, [auth.user?.refresh_token]);
 
   // After an explicit local discard we already KNOW this device is logged
   // out — don't block on (or surface errors from) auth.me, which may be the
@@ -122,6 +148,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     setDiscarded(true);
     void (async () => {
       await db.auth.signOut();
+      // The keychain token belongs to the identity we're discarding — drop it so
+      // a reinstall doesn't silently restore it.
+      await clearStoredAuthToken();
       // The cached auth.me answer belongs to the discarded identity.
       await queryClient.resetQueries();
     })().catch((err: unknown) => {

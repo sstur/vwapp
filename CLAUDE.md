@@ -32,6 +32,14 @@ account via `CLOUDFLARE_ACCOUNT_ID` in the environment. Apple Maps is optional
 `CREDS_ENC_KEY` (secrets = `.dev.vars`, pushed via `wrangler secret bulk`), so
 the cron polls VW for real every minute once deployed.
 
+**Releasing the app — ALWAYS TestFlight, NEVER OTA:** never ship changes to the
+owner's device with an EAS Update (OTA / `eas update`); every release goes
+through a full native build + TestFlight submission (`pnpm --filter
+@vwapp/mobile run publish:ios`). OTA is unreliable here (and can't deliver
+native changes — new native modules like `expo-secure-store` only ship in a
+build), so it is deliberately not used. The EAS Update tooling below stays only
+for ad-hoc Expo Go dev testing, not for delivering releases.
+
 **Publishing the app (EAS Update → Expo Go):** owner-specific Expo config is
 env-driven via `app/app.config.ts` (which augments the generic `app.json`):
 `EXPO_OWNER`, `EAS_PROJECT_ID` (→ `extra.eas.projectId` + the `updates.url`), and
@@ -116,6 +124,23 @@ half): `auth.login` writes initial snapshots after storing creds, and the
 dashboard auto-fires one `vehicle.refresh` when a vehicle has no snapshot
 (plus an explicit empty-state card) — crons never fire on a clock in dev, so
 without these a fresh login would show a blank dashboard.
+
+**Voice assistant (`assistant.ask` RPC, `backend/src/assistant.ts`):** a
+press-and-hold mic on the dashboard (`app/src/components/voice-control.tsx`,
+`expo-audio` — records m4a, sends base64) drives a one-shot pipeline run
+entirely on **Cloudflare Workers AI** via the `env.AI` binding (no external AI
+keys): Whisper STT → **GLM-5.2** (`@cf/zai-org/glm-5.2`) tool-calling loop →
+MeloTTS, returning `{transcript, reply, audioBase64}` the app speaks + shows
+(text fades after playback). The LLM's tools are the **existing** vehicle
+procedures, reused verbatim through an in-process `createRouterClient(router,
+{context})` (status reads hit `getLatestSnapshot` directly) — no duplicated
+VW/S-PIN/climate orchestration. GLM-5.2 post-dates the generated
+`worker-configuration.d.ts`, so its call uses one isolated cast against the
+binding's untyped-model overload (STT/TTS are typed); the chat I/O is the
+unified OpenAI-style `ChatCompletions*` shape. Voice unlock IS enabled (no extra
+confirmation, unlike the LockControl button) — a deliberate choice. The exact
+Workers AI request/response shapes (GLM tool_calls field, MeloTTS audio format)
+still want a live confirmation against the account.
 
 **VW integration — critical constraint:** the account is **North America
 (myVW / legacy Car-Net)**: host `b-h-s.spr.us00.p.con-veh.net`, identity
@@ -315,6 +340,8 @@ used two ways, and **both perform real VW password logins** (mind the throttle
   the `deploy` script). `app/.env` =
   `EXPO_PUBLIC_INSTANT_APP_ID` + `EXPO_PUBLIC_API_URL` (both bundled; recreate
   per clone) and the config-time-only `EXPO_OWNER` / `EAS_PROJECT_ID` /
-  `IOS_BUNDLE_IDENTIFIER` read by `app/app.config.ts`.
+  `IOS_BUNDLE_IDENTIFIER` read by `app/app.config.ts`. The voice assistant adds
+  **no** secret — it uses the Workers AI `AI` binding (`backend/wrangler.jsonc`),
+  which bills to the deploy account; that account just needs Workers AI enabled.
 - Routes live in `app/src/app/` only; providers/utilities stay outside it.
   Kebab-case filenames.
