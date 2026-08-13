@@ -39,6 +39,14 @@ export interface StoredAccount {
   tokens: VwTokens;
   /** Cached carnet tokens by vehicle uuid (see the vwAccounts schema comment). */
   carnetTokens: Record<string, CarnetToken>;
+  /** Password-login circuit breaker state (see tokens.ts). */
+  login: LoginBreaker;
+}
+export interface LoginBreaker {
+  /** Consecutive failed VW password logins; 0 once one succeeds. */
+  failures: number;
+  /** Epoch ms before which no password login may be attempted (0 = open). */
+  blockedUntil: number;
 }
 export interface StoredUser {
   id: string;
@@ -57,6 +65,8 @@ interface AccountRecord {
   tokenExpiresAt: number;
   codeVerifier?: string | undefined;
   carnetTokens?: string | undefined;
+  loginFailures?: number | undefined;
+  loginBlockedUntil?: number | undefined;
 }
 interface VehicleRecord {
   id: string;
@@ -93,6 +103,10 @@ function toStoredAccount(a: AccountRecord): StoredAccount {
   return {
     id: a.id,
     carnetTokens: parseCarnetTokens(a.carnetTokens),
+    login: {
+      failures: a.loginFailures ?? 0,
+      blockedUntil: a.loginBlockedUntil ?? 0,
+    },
     sealed: { ciphertext: a.credCiphertext, iv: a.credIv },
     tokens: {
       accessToken: a.accessToken,
@@ -282,6 +296,40 @@ export async function updateTokens(
       idToken: tokens.idToken,
       tokenExpiresAt: tokens.expiresAt,
       codeVerifier: tokens.codeVerifier,
+    }),
+  );
+}
+
+/**
+ * Record a failed VW password login and arm the circuit breaker. Mutates
+ * `account.login` in place so the rest of this invocation sees the new state.
+ */
+export async function recordLoginFailure(
+  db: Db,
+  account: StoredAccount,
+  blockedUntil: number,
+): Promise<void> {
+  const failures = account.login.failures + 1;
+  account.login = { failures, blockedUntil };
+  await db.transact(
+    tx(db.tx.vwAccounts[account.id]).update({
+      loginFailures: failures,
+      loginBlockedUntil: blockedUntil,
+    }),
+  );
+}
+
+/** Re-open the breaker after a healthy VW auth. No-op when already open. */
+export async function clearLoginFailures(
+  db: Db,
+  account: StoredAccount,
+): Promise<void> {
+  if (account.login.failures === 0 && account.login.blockedUntil === 0) return;
+  account.login = { failures: 0, blockedUntil: 0 };
+  await db.transact(
+    tx(db.tx.vwAccounts[account.id]).update({
+      loginFailures: 0,
+      loginBlockedUntil: 0,
     }),
   );
 }

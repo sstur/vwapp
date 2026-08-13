@@ -2,6 +2,8 @@
 import { unseal } from "./crypto";
 import type { AppEnv } from "./env";
 import {
+  clearLoginFailures,
+  recordLoginFailure,
   saveCarnetToken,
   updateTokens,
   type Db,
@@ -16,6 +18,22 @@ import {
   type VwTokens,
 } from "./vw/client";
 
+/** Thrown instead of attempting a password login while the breaker is armed. */
+export class VwLoginBlockedError extends Error {}
+
+/**
+ * How long to refuse password logins after `failures` consecutive failures:
+ * 15m, 30m, 1h, 2h, 4h, 8h, then 12h forever. VW's throttle tolerates ~8-10
+ * logins in quick succession, so even the first step is far inside the limit,
+ * while a permanently broken auth (a changed password, or VW tightening the
+ * protocol) settles at 2 attempts a day instead of 1440.
+ */
+export function loginBackoffMs(failures: number): number {
+  const FIFTEEN_MIN = 15 * 60_000;
+  const TWELVE_HOURS = 12 * 60 * 60_000;
+  return Math.min(FIFTEEN_MIN * 2 ** Math.max(0, failures - 1), TWELVE_HOURS);
+}
+
 /**
  * Get fresh VW tokens, refreshing / re-logging-in as needed, and persist them.
  *
@@ -23,6 +41,14 @@ import {
  * throttled resource (~8-10 in quick succession locks the account out for a
  * while), so the log must show exactly when one happened and what triggered
  * it. Never log credentials or tokens — account ids only.
+ *
+ * Password logins additionally go through a persisted circuit breaker
+ * (`account.login`): consecutive failures push an exponentially growing block
+ * window, and while it is armed this throws VwLoginBlockedError WITHOUT
+ * touching VW. Without it, a dead VW session turns the every-minute cron into
+ * ~60 password logins an hour — how 2026-08-13's outage nearly cost the
+ * account. The breaker is deliberately NOT armed by refresh failures (the
+ * refresh grant isn't the throttled resource); only real logins count.
  */
 export async function reauth(
   db: Db,
@@ -30,6 +56,18 @@ export async function reauth(
   account: StoredAccount,
   forceRelogin: boolean,
 ): Promise<VwTokens> {
+  // Armed breaker short-circuits the WHOLE reauth, refresh included: the
+  // breaker only ever arms after a login that itself followed a failed
+  // refresh, so retrying the refresh every tick just adds 1440 doomed calls a
+  // day to VW's token endpoint. One refresh+login attempt per window instead.
+  if (account.login.blockedUntil > Date.now()) {
+    const mins = Math.ceil((account.login.blockedUntil - Date.now()) / 60_000);
+    const msg =
+      `VW auth blocked for another ${String(mins)}m after ` +
+      `${String(account.login.failures)} consecutive failed password logins`;
+    console.log(`[auth] account=${account.id} ${msg}`);
+    throw new VwLoginBlockedError(msg);
+  }
   let tokens: VwTokens | null = null;
   // VW's refresh grant now also requires the original login code_verifier, so a
   // session stored without one can't refresh — go straight to a full login
@@ -45,6 +83,9 @@ export async function reauth(
         account.tokens.codeVerifier,
       );
       console.log(`[auth] account=${account.id} token refresh ok`);
+      // A working refresh means the session is healthy again — re-open the
+      // breaker so the next genuine need for a login isn't blocked.
+      await clearLoginFailures(db, account);
     } catch (err) {
       console.log(
         `[auth] account=${account.id} token refresh failed (${err instanceof Error ? err.message : "unknown"})`,
@@ -70,9 +111,16 @@ export async function reauth(
     try {
       tokens = await vwLogin(creds.username, creds.password);
       console.log(`[auth] account=${account.id} VW password login ok`);
+      await clearLoginFailures(db, account);
     } catch (err) {
+      const blockedUntil =
+        Date.now() + loginBackoffMs(account.login.failures + 1);
+      await recordLoginFailure(db, account, blockedUntil);
       console.error(
-        `[auth] account=${account.id} VW password login FAILED: ${err instanceof Error ? err.message : "unknown"}`,
+        `[auth] account=${account.id} VW password login FAILED: ` +
+          `${err instanceof Error ? err.message : "unknown"} — ` +
+          `attempt ${String(account.login.failures)}, ` +
+          `next allowed ${new Date(blockedUntil).toISOString()}`,
       );
       throw err;
     }

@@ -6,11 +6,13 @@ import type { AppEnv } from "./env";
 import { isMapsConfigured, signSnapshotUrl } from "./maps";
 import { readStatus } from "./status";
 import {
+  clearLoginFailures,
   clearUserData,
   endClimateSession,
   getAccountByUserKey,
   getActiveClimateSession,
   getUser,
+  recordLoginFailure,
   saveAccountSession,
   saveLogin,
   saveSnapshot,
@@ -24,7 +26,12 @@ import {
   type StoredUser,
   type StoredVehicle,
 } from "./store";
-import { ensureCarnetToken, ensureTokens, reauth } from "./tokens";
+import {
+  ensureCarnetToken,
+  ensureTokens,
+  loginBackoffMs,
+  reauth,
+} from "./tokens";
 import {
   VwAuthError,
   vwAwaitCommandResult,
@@ -188,11 +195,36 @@ async function establishSession(
   // No session, changed/wrong password, or dead tokens: authenticate with VW
   // for real.
   if (session === null) {
+    // Same circuit breaker the server-side path uses (tokens.ts): a client
+    // retrying a doomed login must not be able to walk the account into VW's
+    // throttle either. Only applies once there IS a stored account to count
+    // failures against — a first-ever login has nothing to spam.
+    if (existing !== null && existing.login.blockedUntil > Date.now()) {
+      const mins = Math.ceil(
+        (existing.login.blockedUntil - Date.now()) / 60_000,
+      );
+      console.log(
+        `[auth] account=${existing.id} login blocked (${String(existing.login.failures)} consecutive failures, ${String(mins)}m left)`,
+      );
+      throw new ORPCError("TOO_MANY_REQUESTS", {
+        message:
+          `Too many failed VW logins. VW locks the account out if we keep ` +
+          `trying, so the next attempt is allowed in ${String(mins)} minutes.`,
+      });
+    }
     let tokens;
     try {
       tokens = await vwLogin(username, password);
       console.log(`[auth] VW password login ok`);
+      if (existing !== null) await clearLoginFailures(context.db, existing);
     } catch (err) {
+      if (existing !== null) {
+        await recordLoginFailure(
+          context.db,
+          existing,
+          Date.now() + loginBackoffMs(existing.login.failures + 1),
+        );
+      }
       console.error(
         `[auth] VW password login FAILED: ${err instanceof Error ? err.message : "unknown"}`,
       );

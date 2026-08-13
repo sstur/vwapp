@@ -36,6 +36,19 @@ const _schema = i.schema({
        * while vwAccounts is deny-all.
        */
       carnetTokens: i.string().optional(),
+      /**
+       * Circuit breaker for VW *password* logins — the throttled resource
+       * (~8-10 in quick succession locks the account out). Counts consecutive
+       * failures; cleared on the first success. See tokens.ts loginBackoffMs.
+       */
+      loginFailures: i.number().optional(),
+      /**
+       * Epoch ms before which no password login may be attempted for this
+       * account. Exists because a dead VW session (2026-08-13: both grants
+       * 401ing) otherwise made the every-minute cron fire a full login every
+       * tick — ~60/hour straight at the lockout.
+       */
+      loginBlockedUntil: i.number().optional(),
     }),
     vehicles: i.entity({
       vin: i.string().indexed(),

@@ -19,5 +19,12 @@
   // 1-min polling is safe. Crons don't fire on a clock in dev: `pnpm dev`
   // pairs wrangler with a curl loop ticking
   // "http://localhost:8787/cdn-cgi/handler/scheduled" every 60s.
+  // A dead VW session used to turn this into ~60 password logins an hour
+  // (2026-08-13: both OAuth grants started 401ing and reauth() had no
+  // backoff) — right at VW's ~8-10 throttle. The breaker in tokens.ts now
+  // bounds that to one reauth attempt per backoff window, so the every-minute
+  // cron is safe again. NB: setting "crons": [] here does NOT remove the
+  // schedule from a deployed Worker — wrangler treats the empty array as a
+  // no-op, so use the dashboard/API if you ever truly need it off.
   "triggers": { "crons": ["* * * * *"] },
 }
