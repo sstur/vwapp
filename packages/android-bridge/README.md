@@ -20,6 +20,9 @@ mkdir -p ~/.config/vw-android-bridge
 chmod 700 ~/.config/vw-android-bridge
 cp config.example.json ~/.config/vw-android-bridge/config.json
 chmod 600 ~/.config/vw-android-bridge/config.json
+python3 -m venv ~/.config/vw-android-bridge/venv
+source ~/.config/vw-android-bridge/venv/bin/activate
+pip install -r requirements.txt
 adb devices -l
 python3 -c 'import secrets; print(secrets.token_urlsafe(32))'
 ```
@@ -83,9 +86,33 @@ Example body (secrets shown only as placeholders):
 
 Operations: `session` (VIN null, returns visible garage vehicles), `status`,
 `climateInfo`, `climate` (`enabled`, optional `tempF`), `lock` (`locked`), and
-`charge` (`enabled`). `chargeLimit` currently returns `UNSUPPORTED_OPERATION`;
-this stock-app layout has no validated charge-limit UI. Activity, inbox sync,
-detailed closures, odometer, and location coordinates are not implemented.
+`charge` (`enabled`), `chargeLimit` (`targetSoc`, 50–100 in steps of ten),
+`activity`, and `messages`. Charge-limit writes reopen battery settings after
+the pending state ends and verify the saved value. Saved charging-location
+settings may override this general battery limit.
+
+Status includes the general battery target, category update labels, and parked
+coordinates/address. Coordinates come from the directions intent myVW opens in
+Google Maps; navigation is never started. Google Maps must be installed. The
+odometer is read when visible; charging's countdown replaces it, so the cloud
+retains the last reading with its original observation time. Reads never stop
+charging to expose mileage.
+
+For a validated ID. Buzz, add `"vehicleProfiles": {"YOUR_VIN": "idbuzz_2024"}`
+to private config. Door/window highlights are read through deterministic pixel
+comparison against the same layered artwork used by our mobile client. Bounds
+come from accessibility, not device coordinates; unknown models, clipping,
+ambiguous images, and layout changes report unavailable. The ordinary vehicle
+photo means no openings are highlighted. Neither that photo nor an unhighlighted
+door proves an individual sensor reports closed; Android clients label these
+items “Not shown open”. Individual door-lock values, instantaneous charging kW,
+and connector-lock state remain unknown when absent from the UI.
+
+Activity and the Messages inbox tab are read with bounded scrolling (50 items,
+15 pages). Inbox reading does not open messages or change their read flags.
+Synthetic content IDs are stable across refreshes. Android inbox sync preserves
+existing read/delete overrides and never prunes older rows based on UI absence.
+Offers are a separate stock-app tab, not part of the Messages inbox.
 
 The service verifies the profile email, switches accounts through the app when
 needed, and selects the exact VIN before each vehicle operation. It reuses the
@@ -120,6 +147,10 @@ returns `APP_VERSION_CHANGED` until its layout is reviewed. The verified device
 is a stock Pixel 8 running Android 17; no device-specific coordinates are used.
 A replacement phone needs Play installation, USB authorization, a serial config
 change, and validation. Login credentials will come from the cloud on demand.
+Use the virtual environment's Python to install the LaunchAgent so Pillow is
+available to the image reader. The vehicle profile is keyed by VIN and survives
+a phone replacement. To run all tests, activate this environment before `pnpm
+test` from the repository root.
 
 ### Data semantics
 

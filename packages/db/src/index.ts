@@ -121,10 +121,15 @@ const _schema = i.schema({
       source: i.string().optional(),
       observedAt: i.number().optional(),
       reportedUpdatedText: i.string().optional(),
+      reportedUpdates: i.json().optional(),
+      reportedParkedText: i.string().optional(),
+      parkedAddress: i.string().optional(),
+      odometerObservedAt: i.number().optional(),
       closuresKnown: i.boolean().optional(),
       climateOn: i.boolean().optional(),
       targetTempF: i.number().optional(),
       minutesToTarget: i.number().optional(),
+      chargingTargetSoc: i.number().optional(),
       /** When the Worker stored this row. Indexed for order/prune queries. */
       createdAt: i.number().indexed(),
       /** When VW captured the data, epoch ms. */

@@ -1,5 +1,11 @@
 import { createRouterClient, implement, ORPCError } from "@orpc/server";
-import { contract, vehicleSchema, type VehicleDTO } from "@vwapp/contract";
+import {
+  activityEventSchema,
+  contract,
+  inboxMessageSchema,
+  vehicleSchema,
+  type VehicleDTO,
+} from "@vwapp/contract";
 import { z } from "zod";
 import { runAssistant, type VehicleCaller } from "./assistant";
 import { seal, sha256Hex, timingSafeEqual, unseal } from "./crypto";
@@ -33,12 +39,7 @@ import {
   loginBackoffMs,
   reauth,
 } from "./tokens";
-import {
-  sessionCall,
-  unsupported,
-  usesAndroid,
-  vehicleCall,
-} from "./vehicle/android";
+import { sessionCall, usesAndroid, vehicleCall } from "./vehicle/android";
 import {
   VwAuthError,
   vwAwaitCommandResult,
@@ -1126,7 +1127,10 @@ const activity = os.vehicle.activity.handler(async ({ input, context }) => {
     throw new ORPCError("UNAUTHORIZED", { message: "not logged in" });
   const account = user.account;
   const vehicle = pickVehicle(user, input.uuid);
-  if (usesAndroid(env)) unsupported();
+  if (usesAndroid(env)) {
+    const result = await vehicleCall(env, account, vehicle, "activity");
+    return z.object({ events: z.array(activityEventSchema) }).parse(result);
+  }
 
   const spin = await requireSpin(env, account);
 
@@ -1156,7 +1160,10 @@ const messages = os.vehicle.messages.handler(async ({ input, context }) => {
     throw new ORPCError("UNAUTHORIZED", { message: "not logged in" });
   const account = user.account;
   const vehicle = pickVehicle(user, input.uuid);
-  if (usesAndroid(env)) unsupported();
+  if (usesAndroid(env)) {
+    const result = await vehicleCall(env, account, vehicle, "messages");
+    return z.object({ messages: z.array(inboxMessageSchema) }).parse(result);
+  }
 
   const spin = await requireSpin(env, account);
 
@@ -1194,7 +1201,15 @@ const refreshMessages = os.vehicle.refreshMessages.handler(
       throw new ORPCError("UNAUTHORIZED", { message: "not logged in" });
     const account = user.account;
     const vehicle = pickVehicle(user, input.uuid);
-    if (usesAndroid(env)) unsupported();
+    if (usesAndroid(env)) {
+      const result = z
+        .object({ messages: z.array(inboxMessageSchema) })
+        .parse(await vehicleCall(env, account, vehicle, "messages"));
+      // UI pagination cannot prove an upstream deletion. Preserve older messages
+      // and existing user read/delete overrides while merging the visible inbox.
+      await syncMessages(db, account.id, result.messages, false, false);
+      return { ok: true as const };
+    }
 
     const spin = await requireSpin(env, account);
 

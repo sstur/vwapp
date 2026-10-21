@@ -20,7 +20,9 @@ export type Operation =
   | "climateInfo"
   | "lock"
   | "charge"
-  | "chargeLimit";
+  | "chargeLimit"
+  | "activity"
+  | "messages";
 export interface Completion {
   vehicleId: string;
   climate?:
@@ -200,6 +202,16 @@ export const phoneStatusSchema = z.object({
   rangeKm: z.number().nullable(),
   chargeState: z.string().nullable(),
   targetSoc: z.number().nullable(),
+  chargingTargetSoc: z.number().nullable().optional(),
+  odometerKm: z.number().nullable().optional(),
+  parkedLat: z.number().min(-90).max(90).nullable().optional(),
+  parkedLng: z.number().min(-180).max(180).nullable().optional(),
+  parkedAddress: z.string().nullable().optional(),
+  reportedParkedText: z.string().nullable().optional(),
+  reportedUpdates: z.record(z.string(), z.string()).optional(),
+  closuresKnown: z.boolean().optional(),
+  openDoors: z.array(z.string()).optional(),
+  openWindows: z.array(z.string()).optional(),
   locked: z.boolean().nullable(),
   minutesToTarget: z.number().nullable(),
   observedAt: z.string(),
@@ -223,15 +235,20 @@ export function toStatus(raw: unknown): StatusDTO {
           ? "complete"
           : s.chargeState,
     chargePowerKw: null,
-    minutesToFull: s.targetSoc === 100 ? s.minutesToTarget : null,
+    minutesToFull:
+      (s.chargingTargetSoc ?? s.targetSoc) === 100 ? s.minutesToTarget : null,
     pluggedIn: s.pluggedIn ?? (s.chargeState === "Charging" ? true : null),
     plugLocked: null,
-    openDoors: [],
-    openWindows: [],
+    openDoors: s.closuresKnown ? (s.openDoors ?? []) : [],
+    openWindows: s.closuresKnown ? (s.openWindows ?? []) : [],
     unlockedDoors: [],
-    odometerKm: null,
-    parkedLat: null,
-    parkedLng: null,
+    odometerKm: s.odometerKm ?? null,
+    odometerObservedAt: s.odometerKm != null ? Date.parse(s.observedAt) : null,
+    parkedLat: s.parkedLat ?? null,
+    parkedLng: s.parkedLng ?? null,
+    parkedAddress: s.parkedAddress ?? null,
+    reportedParkedText: s.reportedParkedText ?? null,
+    reportedUpdates: s.reportedUpdates ?? {},
     parkedAt: null,
     capturedAt: null,
     rvsUpdatedAt: null,
@@ -242,9 +259,10 @@ export function toStatus(raw: unknown): StatusDTO {
     source: "android",
     observedAt: Date.parse(s.observedAt),
     reportedUpdatedText: s.reportedUpdatedText,
-    closuresKnown: false,
+    closuresKnown: s.closuresKnown ?? false,
     climateOn: s.climateOn,
     targetTempF: s.targetTempF,
     minutesToTarget: s.minutesToTarget,
+    chargingTargetSoc: s.chargingTargetSoc ?? null,
   });
 }

@@ -82,6 +82,26 @@ beforeEach(() => {
 });
 
 describe("phone status normalization", () => {
+  it("preserves restored readings and distinguishes UI observations from vehicle time", () => {
+    const s = toStatus({
+      ...status,
+      odometerKm: 48131,
+      parkedLat: 37.5,
+      parkedLng: -122.2,
+      closuresKnown: true,
+      openDoors: ["front right"],
+      openWindows: [],
+      reportedUpdates: { Doors: "Updated at 5:00PM" },
+      reportedParkedText: "Parked at 1:32PM",
+    });
+    expect(s.openDoors).toEqual(["front right"]);
+    expect(s.closuresKnown).toBe(true);
+    expect(s.odometerObservedAt).toBe(Date.parse(status.observedAt));
+    expect(s.parkedLat).toBe(37.5);
+    expect(s.parkedAt).toBeNull();
+    expect(s.doorsUpdatedAt).toBeNull();
+    expect(s.reportedUpdates).toEqual({ Doors: "Updated at 5:00PM" });
+  });
   it("keeps observation time separate, and never invents closure or charging data", () => {
     const s = toStatus(status);
     expect(s.capturedAt).toBeNull();

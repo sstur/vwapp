@@ -9,8 +9,11 @@ from __future__ import annotations
 import re
 import time
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from .device import BridgeError, Device, Node, select
+from .readings import activity_page, message_page, direction_coordinates, texts
+from .closures import read as read_closures
 
 PACKAGE = "com.vw.carnet.release"
 PREFIX = PACKAGE + ":id/"
@@ -57,6 +60,8 @@ def parse_status(top: list[Node], controls: list[Node], vin: str) -> dict:
     timers = [re.fullmatch(r"(?:(\d+)h\s*)?(?:(\d+)m\s*)?to (\d+)%", t) for t in texts]
     timers = [m for m in timers if m and (m[1] or m[2])]
     timer = timers[0] if len(timers) == 1 else None
+    mileage = [re.fullmatch(r"([\d,]+) (mi|km)", t) for t in texts]
+    mileage = [m for m in mileage if m]
     lock = text_by_id(top, "vehicleModelTextView")
     name = text_by_id(top, "vehicleNameTextView")
     if not name:
@@ -68,6 +73,8 @@ def parse_status(top: list[Node], controls: list[Node], vin: str) -> dict:
         "pluggedIn": True if "Plugged in" in texts or "Charging" in texts else None,
         "minutesToTarget": int(timer[1] or 0) * 60 + int(timer[2] or 0) if timer else None,
         "targetSoc": int(timer[3]) if timer else None,
+        "chargingTargetSoc": int(timer[3]) if timer else None,
+        "odometerKm": round(int(mileage[0][1].replace(",", "")) * (1.609344 if mileage[0][2] == "mi" else 1), 3) if len(mileage) == 1 else None,
         "locked": {"Locked": True, "Unlocked": False}.get(lock),
         "observedAt": now(), "reportedUpdatedText": text_by_id(top, "timestampTextView"),
         "capturedAt": None, "source": "myVW Android UI",
@@ -77,7 +84,7 @@ def parse_status(top: list[Node], controls: list[Node], vin: str) -> dict:
 
 
 class MyVW:
-    def __init__(self, device: Device, username: str, vin: str):
+    def __init__(self, device: Device, username: str, vin: str, vehicle_profiles=None):
         self.device, self.username, self.vin = device, username.strip().lower(), vin
         self.credentials = {}
         self.reserve_login = None
@@ -86,6 +93,7 @@ class MyVW:
         self.pin_attempted = False
         self.account_verified = False
         self.authentication_started = False
+        self.vehicle_profiles = vehicle_profiles or {}
 
     def enter_pin(self):
         pin = self.credentials.get("spin")
@@ -271,6 +279,14 @@ class MyVW:
                 self.tap_id("climateDepSettingsCancel")
             elif by_id(nodes, "climateTitleTextView") or by_id(nodes, "actionTitleTextView"):
                 self.device.shell("input", "keyevent", "4")
+            elif by_id(nodes, "settingsDesc") or any(n.get("text") in {
+                "Inbox", "Activity History", "Activity history", "Vehicle Information",
+                "Vehicle information",
+                "Vehicle status updates", "Your Preferred Dealer",
+            } for n in nodes if n.get("package") == PACKAGE):
+                # These are read/detail screens or unsaved forms. Back cancels,
+                # never saves a partially edited battery configuration.
+                self.device.shell("input", "keyevent", "4")
             elif any(n.get("text") == "Garage" for n in nodes):
                 vins = [n.get("text") for n in nodes if n.get("package") == PACKAGE and re.fullmatch(r"[A-HJ-NPR-Z0-9]{17}", n.get("text"))]
                 target = self.vin or (vins[0] if vins else "")
@@ -312,14 +328,40 @@ class MyVW:
 
     def status(self) -> dict:
         top = self.prepare()
+        closures = read_closures(self.device, top, self.vehicle_profiles.get(self.vin))
         controls = self.controls()
         result = parse_status(top, controls, self.vin)
+        result.update(closures)
         self.tap_id("climateButton")
         result["targetTempF"] = self.temperature(controls)
         result["climateOn"] = climate_state(self.wait_id("climateTitleTextView"))
         self.device.shell("input", "keyevent", "4")
+        # The charging countdown replaces the odometer in the stock app. The
+        # cloud retains an explicitly dated last odometer observation when hidden.
+        self.home_top()
+        result["targetSoc"] = self.battery_target(self.open_battery_settings())
+        self.device.shell("input", "keyevent", "4")
+        self.tap_id("timestampTextView")
+        self.device.wait(PACKAGE, text="Vehicle status updates")
+        updates = {}
+        for node in self.snapshot():
+            children = node.descendants()
+            category = text_by_id(children, "detailTitleTextView")
+            label = text_by_id(children, "detailTimestampTextView")
+            if category in {"Doors", "Locks", "Windows", "Charging"} and label:
+                updates[category] = label
+        result["reportedUpdates"] = updates
+        self.device.shell("input", "keyevent", "4")
+        result.update(self.parked_location())
         result["observedAt"] = now()
         return result
+
+    def home_top(self):
+        self.home()
+        self.tap_id("account_nav_graph")
+        self.wait_id("profile_list_item")
+        self.tap_id("home_nav_graph")
+        return self.wait_id("vehicleNameTextView")
 
     def climate(self, enabled: bool, timeout: float = 180) -> dict:
         self.prepare()
@@ -473,4 +515,151 @@ class MyVW:
             raise BridgeError("OUTCOME_UNKNOWN", "Charging command was submitted but could not be confirmed") from exc
 
     def charge_limit(self, target):
-        raise BridgeError("UNSUPPORTED_OPERATION", "Charge limit automation has not been validated for this app version")
+        self.prepare()
+        nodes = self.open_battery_settings()
+        original = self.battery_target(nodes)
+        if original == target:
+            self.device.shell("input", "keyevent", "4")
+            return {"targetSoc": target, "changed": False, "observedAt": now()}
+        slider = select(nodes, PACKAGE, **{"resource-id": PREFIX + "sliderRadius"})
+        low, high = text_by_id(nodes, "minValueTextView"), text_by_id(nodes, "maxValueTextView")
+        if (low, high) != ("50%", "100%") or target not in range(50, 101, 10):
+            raise BridgeError("UNEXPECTED_UI", "Battery slider range changed")
+        x1, y1, x2, y2 = slider.bounds
+        inset = (y2 - y1) / 2
+        # Slider endpoints exclude the thumb radius. Re-read the displayed
+        # percentage before saving; an imprecise gesture must never be sent.
+        x = round(x1 + inset + (target - 50) / 50 * (x2 - x1 - 2 * inset))
+        self.device.shell("input", "tap", str(x), str((y1 + y2) // 2))
+        edited = self.snapshot()
+        if self.battery_target(edited) != target:
+            self.device.shell("input", "keyevent", "4")
+            raise BridgeError("UNEXPECTED_UI", "Battery slider did not select the requested percentage")
+        container = select(edited, PACKAGE, **{"resource-id": PREFIX + "actionLoadingLayout"})
+        select(container.descendants(), PACKAGE, **{"class": "android.widget.ImageButton"})
+        try:
+            self.tap_id("actionLoadingLayout")
+            # Saving returns Home immediately; its menu disappears while VW
+            # processes the command. Wait, then reopen to confirm persistence.
+            self.device.wait(PACKAGE, timeout=240, **{"resource-id": PREFIX + "optionsButton"})
+            actual = self.battery_target(self.open_battery_settings())
+            self.device.shell("input", "keyevent", "4")
+            if actual != target:
+                raise BridgeError("COMMAND_FAILED", "myVW did not retain the requested charge limit")
+            return {"targetSoc": actual, "changed": True, "observedAt": now(),
+                    "verification": "saved battery settings",
+                    "warning": "Saved charging-location settings may override the general battery limit."}
+        except BridgeError as exc:
+            if exc.code == "COMMAND_FAILED":
+                raise
+            raise BridgeError("OUTCOME_UNKNOWN", "Battery settings were submitted but could not be confirmed") from exc
+
+    def open_option(self, label):
+        self.device.wait(PACKAGE, timeout=45, **{"resource-id": PREFIX + "optionsButton"})
+        self.tap_id("optionsButton")
+        self.device.tap(PACKAGE, text=label)
+
+    def open_battery_settings(self):
+        self.open_option("Edit battery settings")
+        return self.wait_id("currentPercentageTextView")
+
+    @staticmethod
+    def battery_target(nodes):
+        value = text_by_id(nodes, "currentPercentageTextView")
+        if value is None or not re.fullmatch(r"(?:50|60|70|80|90|100)%", value):
+            raise BridgeError("UNEXPECTED_UI", "Cannot read the configured battery target")
+        return int(value[:-1])
+
+    def phone_clock(self):
+        zone = self.device.shell("getprop", "persist.sys.timezone").strip()
+        try:
+            return datetime.fromtimestamp(int(self.device.shell("date", "+%s").strip()), ZoneInfo(zone))
+        except (ValueError, KeyError):
+            raise BridgeError("UNEXPECTED_UI", "Cannot identify the phone's calendar/time zone")
+
+    def scroll_list(self, node):
+        x1, y1, x2, y2 = node.bounds
+        self.device.shell("input", "swipe", str((x1 + x2) // 2), str(round(y1 + .85 * (y2 - y1))),
+                          str((x1 + x2) // 2), str(round(y1 + .25 * (y2 - y1))), "500")
+
+    def activity(self):
+        self.prepare()
+        reference = self.phone_clock()
+        self.open_option("View activity history")
+        self.device.wait(PACKAGE, text="Activity History")
+        rows, seen, previous, known = [], set(), None, {}
+        for _ in range(15):
+            nodes = self.snapshot()
+            container = select(nodes, PACKAGE, **{"scrollable": "true"})
+            signature = tuple(texts(container))
+            if signature == previous:
+                break
+            page = activity_page(container, reference, known)
+            for row in page:
+                key = (row["at"], row["title"], row["description"])
+                if key not in seen:
+                    seen.add(key)
+                    rows.append(row)
+            if len(rows) >= 50:
+                break
+            previous = signature
+            self.scroll_list(container)
+        self.device.shell("input", "keyevent", "4")
+        return {"events": rows[:50]}
+
+    def messages(self):
+        self.prepare()
+        reference = self.phone_clock()
+        self.tap_id("messageCenterButton")
+        self.device.wait(PACKAGE, text="Inbox")
+        self.device.tap(PACKAGE, text="Messages")
+        self.device.wait(PACKAGE, text="All")
+        rows, previous, complete = {}, None, False
+        for _ in range(15):
+            nodes = self.snapshot()
+            container = select(nodes, PACKAGE, **{"scrollable": "true"})
+            signature = tuple(texts(container))
+            if signature == previous:
+                complete = True
+                break
+            for row in message_page(container, reference):
+                rows[row["id"]] = row
+            if len(rows) >= 50:
+                break
+            previous = signature
+            self.scroll_list(container)
+        if not rows and not any(n.get("text") in {"No messages", "You have no messages"} for n in nodes):
+            raise BridgeError("UNEXPECTED_UI", "Inbox layout did not expose any recognizable messages")
+        self.device.shell("input", "keyevent", "4")
+        return {"messages": list(rows.values())[:50], "complete": complete}
+
+    def parked_location(self):
+        self.home()
+        self.tap_id("navigation_nav_graph")
+        nodes = self.device.nodes()
+        prompts = [n for n in nodes if n.get("resource-id") == "com.android.permissioncontroller:id/permission_deny_button"
+                   and n.get("text") == "Keep approximate location"]
+        if len(prompts) == 1:
+            self.device.tap(prompts[0].get("package"), text="Keep approximate location")
+        self.wait_id("button_vehicle_location")
+        self.tap_id("button_vehicle_location")
+        self.device.tap(PACKAGE, **{"content-desc": "Map Marker"})
+        nodes = self.wait_id("label_nearest_address")
+        address = text_by_id(nodes, "label_nearest_address")
+        reported = text_by_id(nodes, "label_lpp_timestamp")
+        self.tap_id("button_get_directions")
+        try:
+            deadline = time.monotonic() + 25
+            while True:
+                try:
+                    lat, lng = direction_coordinates(self.device.shell("dumpsys", "activity", "activities"))
+                    break
+                except BridgeError:
+                    if time.monotonic() >= deadline:
+                        raise
+                    time.sleep(1)
+        finally:
+            self.device.launch(PACKAGE)
+        self.tap_id("home_nav_graph")
+        return {"parkedLat": lat, "parkedLng": lng, "parkedAddress": address,
+                "reportedParkedText": reported}

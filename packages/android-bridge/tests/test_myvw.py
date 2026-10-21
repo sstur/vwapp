@@ -11,6 +11,36 @@ def node(text, suffix="", enabled="true", package=PACKAGE):
 
 
 class StatusTests(unittest.TestCase):
+    def test_odometer_is_read_only_when_displayed(self):
+        top = [node("van", "vehicleNameTextView")]
+        idle = parse_status(top, [node("52% | 133 Est. mi"), node("29,907 mi")], "TESTVIN")
+        charging = parse_status(top, [node("52% | 133 Est. mi"), node("42h 20m to 80%")], "TESTVIN")
+        self.assertAlmostEqual(idle["odometerKm"], 48130.651)
+        self.assertIsNone(charging["odometerKm"])
+        self.assertEqual(charging["chargingTargetSoc"], 80)
+
+    def test_charge_limit_noop_never_saves(self):
+        driver = MyVW(Mock(), "a@example.com", "TESTVIN")
+        driver.prepare = Mock()
+        driver.open_battery_settings = Mock(return_value=[node("80%", "currentPercentageTextView")])
+        driver.tap_id = Mock()
+        self.assertFalse(driver.charge_limit(80)["changed"])
+        driver.tap_id.assert_not_called()
+
+    def test_charge_limit_wrong_slider_value_cancels_without_saving(self):
+        device = Mock()
+        driver = MyVW(device, "a@example.com", "TESTVIN")
+        driver.prepare = Mock()
+        slider = Node({"package": PACKAGE, "resource-id": PREFIX + "sliderRadius", "enabled": "true", "bounds": "[53,1740][1027,1818]"})
+        driver.open_battery_settings = Mock(return_value=[node("100%", "currentPercentageTextView"), slider,
+                                                         node("50%", "minValueTextView"), node("100%", "maxValueTextView")])
+        driver.snapshot = Mock(return_value=[node("80%", "currentPercentageTextView")])
+        driver.tap_id = Mock()
+        with self.assertRaises(BridgeError):
+            driver.charge_limit(90)
+        driver.tap_id.assert_not_called()
+        self.assertEqual(device.shell.call_args.args, ("input", "keyevent", "4"))
+
     def test_reading_preserves_freshness_and_unknown_values(self):
         top = [node("Test van", "vehicleNameTextView"), node("Unavailable", "vehicleModelTextView"),
                node("Updated yesterday", "timestampTextView")]

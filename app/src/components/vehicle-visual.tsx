@@ -86,7 +86,7 @@ export function VehicleVisual({
       accessibilityLabel={
         open.length > 0
           ? `Vehicle with ${open.join(", ")} open`
-          : "Vehicle with all doors and windows closed"
+          : "Vehicle with no openings highlighted"
       }
     >
       {layers.map((source, i) => (

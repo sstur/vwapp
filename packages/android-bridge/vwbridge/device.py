@@ -22,6 +22,7 @@ class BridgeError(Exception):
 @dataclass(frozen=True)
 class Node:
     attributes: dict[str, str]
+    children: tuple[Node, ...] = ()
 
     def get(self, key: str) -> str:
         return self.attributes.get(key, "")
@@ -51,13 +52,19 @@ class Node:
             result["content-desc"] = "[REDACTED]"
         return result
 
+    def descendants(self) -> list[Node]:
+        return [child for node in self.children for child in (node, *node.descendants())]
+
 
 def parse_nodes(xml: str) -> list[Node]:
     try:
         root = ET.fromstring(xml)
     except ET.ParseError as exc:
         raise BridgeError("UI_UNAVAILABLE", "Android returned an invalid UI hierarchy") from exc
-    return [Node(dict(node.attrib)) for node in root.iter("node")]
+    def build(element):
+        return Node(dict(element.attrib), tuple(build(child) for child in element if child.tag == "node"))
+    trees = [build(element) for element in root if element.tag == "node"]
+    return [node for tree in trees for node in (tree, *tree.descendants())]
 
 
 def select(nodes: list[Node], package: str, **attributes: str) -> Node:
@@ -78,7 +85,7 @@ class Device:
         self.adb = adb
         self.deadline = None
 
-    def run(self, *args: str, timeout: float = 30, enforce_deadline: bool = True) -> str:
+    def run(self, *args: str, timeout: float = 30, enforce_deadline: bool = True, binary: bool = False):
         if enforce_deadline and self.deadline is not None:
             remaining = self.deadline - time.monotonic()
             if remaining <= 0:
@@ -86,13 +93,16 @@ class Device:
             timeout = min(timeout, remaining)
         try:
             result = subprocess.run([self.adb, "-s", self.serial, *args],
-                                    capture_output=True, text=True, timeout=timeout)
+                                    capture_output=True, text=not binary, timeout=timeout)
         except (subprocess.TimeoutExpired, OSError) as exc:
             raise BridgeError("DEVICE_UNAVAILABLE", "ADB did not complete successfully") from exc
         if result.returncode:
             # Never propagate command arguments/output: they can contain credentials.
             raise BridgeError("DEVICE_UNAVAILABLE", "ADB command failed; check device connection and authorization")
         return result.stdout
+
+    def screenshot(self) -> bytes:
+        return self.run("exec-out", "screencap", "-p", binary=True)
 
     def shell(self, *args: str, timeout: float = 30) -> str:
         return self.run("shell", shlex.join(args), timeout=timeout)
@@ -112,7 +122,9 @@ class Device:
     def _nodes_once(self) -> list[Node]:
         path = f"/data/local/tmp/vwbridge-{uuid.uuid4().hex}.xml"
         try:
-            self.shell("uiautomator", "dump", "--compressed", path)
+            # Compression drops controls myVW incorrectly marks unimportant for
+            # accessibility, including the vehicle's battery/settings menu.
+            self.shell("uiautomator", "dump", path)
             return parse_nodes(self.shell("cat", path))
         finally:
             try:

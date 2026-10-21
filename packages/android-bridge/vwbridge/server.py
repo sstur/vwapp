@@ -17,7 +17,7 @@ import threading
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from .jobs import Jobs, configure_logging
+from .jobs import Jobs, OPERATIONS, configure_logging
 from .device import BridgeError, Device
 from .myvw import MyVW, now
 
@@ -146,6 +146,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path == "/v2/health":
             self.reply(200, {"service": "vw-android-bridge", "apiVersion": 2,
+                             "capabilities": sorted(OPERATIONS),
                              "activeRequestId": self.server.jobs.active, "lastJob": self.server.jobs.last,
                              "commandsEnabled": self.server.config.get("commandsEnabled", False)})
             return
@@ -266,7 +267,7 @@ def main():
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
         parser.error("A bridge is already running with this configuration")
-    driver = MyVW(Device(config["serial"], config.get("adb", "adb")), config.get("username", ""), config.get("vin", ""))
+    driver = MyVW(Device(config["serial"], config.get("adb", "adb")), config.get("username", ""), config.get("vin", ""), config.get("vehicleProfiles"))
     configure_logging(state / "events.jsonl")
     journal = Journal(state / "requests.sqlite3")
     server = BridgeServer((host, config.get("port", 8791)), config, driver, journal)

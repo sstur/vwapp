@@ -150,9 +150,7 @@ export function ChargeControl({ s, uuid }: { s: Snapshot; uuid: string }) {
                 }}
                 modifiers={[
                   pickerStyle("menu"),
-                  disabledModifier(
-                    setLimit.isPending || s.source === "android",
-                  ),
+                  disabledModifier(setLimit.isPending),
                 ]}
               >
                 {limitOptions.map((v) => (
@@ -172,7 +170,7 @@ export function ChargeControl({ s, uuid }: { s: Snapshot; uuid: string }) {
 
       {s.source === "android" ? (
         <Paragraph color="$color10" fontSize="$2">
-          Change the charging limit in the vehicle.
+          Saved charging-location settings may override this limit.
         </Paragraph>
       ) : null}
       <AnimatePresence>
@@ -213,9 +211,11 @@ function stateLabel(s: Snapshot): string {
       ? ` ${String(s.chargePowerKw)} kW`
       : "";
   // minutesToFull is whole minutes, so <1m arrives as 0 and drops the estimate.
+  const minutes = s.minutesToTarget ?? s.minutesToFull;
+  const chargingTarget = s.chargingTargetSoc ?? s.targetSoc;
   const eta =
-    s.minutesToFull != null && s.minutesToFull > 0
-      ? ` · ${fmtEta(s.minutesToFull)} to full`
+    minutes != null && minutes > 0
+      ? ` · ${fmtEta(minutes)} to ${chargingTarget != null ? `${String(chargingTarget)}%` : "target"}`
       : "";
   return `Charging${power}${eta}`;
 }

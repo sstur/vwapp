@@ -56,39 +56,50 @@ function diffPair(prev: Snapshot, next: Snapshot, out: UpdateEvent[]): void {
     );
   }
 
-  if (prev.openDoors !== undefined && next.openDoors !== undefined) {
+  const closuresKnown =
+    prev.closuresKnown !== false && next.closuresKnown !== false;
+  const fromDisplay = next.source === "android";
+  if (
+    closuresKnown &&
+    prev.openDoors !== undefined &&
+    next.openDoors !== undefined
+  ) {
     for (const d of added(prev.openDoors, next.openDoors)) {
       out.push({
         at,
-        title: `${doorLabel(d)} opened`,
-        description: null,
+        title: `${doorLabel(d)} ${fromDisplay ? "shown open" : "opened"}`,
+        description: fromDisplay ? "Observed in myVW" : null,
         icon: "door.left.hand.open",
       });
     }
     for (const d of added(next.openDoors, prev.openDoors)) {
       out.push({
         at,
-        title: `${doorLabel(d)} closed`,
-        description: null,
+        title: `${doorLabel(d)} ${fromDisplay ? "no longer shown open" : "closed"}`,
+        description: fromDisplay ? "Observed in myVW" : null,
         icon: "door.left.hand.closed",
       });
     }
   }
 
-  if (prev.openWindows !== undefined && next.openWindows !== undefined) {
+  if (
+    closuresKnown &&
+    prev.openWindows !== undefined &&
+    next.openWindows !== undefined
+  ) {
     for (const w of added(prev.openWindows, next.openWindows)) {
       out.push({
         at,
-        title: `${windowName(w)} opened`,
-        description: null,
+        title: `${windowName(w)} ${fromDisplay ? "shown open" : "opened"}`,
+        description: fromDisplay ? "Observed in myVW" : null,
         icon: "wind",
       });
     }
     for (const w of added(next.openWindows, prev.openWindows)) {
       out.push({
         at,
-        title: `${windowName(w)} closed`,
-        description: null,
+        title: `${windowName(w)} ${fromDisplay ? "no longer shown open" : "closed"}`,
+        description: fromDisplay ? "Observed in myVW" : null,
         icon: "wind",
       });
     }

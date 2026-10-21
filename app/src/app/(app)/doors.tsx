@@ -73,8 +73,8 @@ export default function DoorsScreen() {
         ) : null}
         {snapshot?.closuresKnown === false ? (
           <Paragraph color="$color10">
-            Detailed door and window status is unavailable from this connection.
-            Lock status remains available on Home.
+            The current myVW vehicle graphic could not be read confidently. Lock
+            status remains available on Home.
           </Paragraph>
         ) : snapshot !== undefined ? (
           <YStack
@@ -116,7 +116,9 @@ export default function DoorsScreen() {
                         ? "open"
                         : unlockedDoors.some((u) => u.startsWith(name))
                           ? "unlocked"
-                          : "closed"
+                          : snapshot.source === "android"
+                            ? "not-shown-open"
+                            : "closed"
                     }
                   />
                 ))}
@@ -129,13 +131,27 @@ export default function DoorsScreen() {
                   <StatusRow
                     key={name}
                     label={windowLabel(name)}
-                    status={openWindows.includes(name) ? "open" : "closed"}
+                    status={
+                      openWindows.includes(name)
+                        ? "open"
+                        : snapshot.source === "android"
+                          ? "not-shown-open"
+                          : "closed"
+                    }
                   />
                 ))}
               </IosGroup>
             </YStack>
             <Paragraph color="$color10" fontSize="$2" self="center">
-              Updated {agoLabel(snapshot.capturedAt ?? snapshot.createdAt, now)}
+              {snapshot.source === "android"
+                ? "As shown by myVW · Read"
+                : "Updated"}{" "}
+              {agoLabel(
+                snapshot.observedAt ??
+                  snapshot.capturedAt ??
+                  snapshot.createdAt,
+                now,
+              )}
             </Paragraph>
           </YStack>
         ) : null}
@@ -149,13 +165,14 @@ function StatusRow({
   status,
 }: {
   label: string;
-  status: "open" | "unlocked" | "closed";
+  status: "open" | "unlocked" | "closed" | "not-shown-open";
 }) {
   const c = useIosColors();
   const style = {
     open: { text: "Open", color: c.red },
     unlocked: { text: "Unlocked", color: c.warn },
     closed: { text: "Closed", color: undefined },
+    "not-shown-open": { text: "Not shown open", color: undefined },
   }[status];
   return <IosRow label={label} value={style.text} valueColor={style.color} />;
 }

@@ -13,7 +13,7 @@ import time
 from .device import BridgeError
 from .myvw import MyVW
 
-OPERATIONS = {"session", "status", "climate", "lock", "charge", "chargeLimit", "climateInfo"}
+OPERATIONS = {"session", "status", "climate", "lock", "charge", "chargeLimit", "climateInfo", "activity", "messages"}
 WRITES = {"climate", "lock", "charge", "chargeLimit"}
 LOG = logging.getLogger("vwbridge.jobs")
 
@@ -142,7 +142,7 @@ class Jobs:
                         raise BridgeError("NEEDS_RECONCILIATION", "A prior command has an unknown outcome. Complete a status read before sending another command.")
             if self.server.driver.device is not None:
                 self.server.driver.device.deadline = time.monotonic() + 480
-            driver = MyVW(self.server.driver.device, c["username"], body["vin"] or "")
+            driver = MyVW(self.server.driver.device, c["username"], body["vin"] or "", self.server.config.get("vehicleProfiles"))
             driver.ensure_session(c, self.reserve_login, self.login_succeeded)
             if op == "session":
                 result = {"vehicles": driver.garage()}
@@ -158,6 +158,10 @@ class Jobs:
                 result = driver.charge(p["enabled"])
             elif op == "chargeLimit":
                 result = driver.charge_limit(p["targetSoc"])
+            elif op == "activity":
+                result = driver.activity()
+            elif op == "messages":
+                result = driver.messages()
             response = {"state": "succeeded", "result": result}
         except BridgeError as exc:
             code = "OUTCOME_UNKNOWN" if op in WRITES and exc.code == "JOB_TIMEOUT" else exc.code

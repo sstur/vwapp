@@ -286,7 +286,15 @@ function StatusCards({
         observedOn={s.climateOn}
       />
       <IosGroup>
-        <IosRow label="Odometer" value={formatMiles(s.odometerKm)} />
+        <IosRow
+          label="Odometer"
+          value={formatMiles(s.odometerKm)}
+          subtitle={
+            s.source === "android" && s.odometerObservedAt != null
+              ? `Read from myVW ${agoLabel(s.odometerObservedAt, now)}`
+              : undefined
+          }
+        />
         <IosRow
           label="Doors & windows"
           value={sec.text}
@@ -315,27 +323,25 @@ function StatusCards({
       {s.source === "android" ? (
         <Paragraph color="$color10" fontSize="$2">
           {s.reportedUpdatedText ?? "Vehicle report time unavailable"}. myVW may
-          show cached data. Activity, messages, and detailed door/window status
-          are not available from this connection.
+          show cached data.
         </Paragraph>
-      ) : (
-        <IosGroup>
-          <IosRow
-            label="Activity"
-            value="View"
-            onPress={() => {
-              router.push("/activity");
-            }}
-          />
-          <IosRow
-            label="Messages"
-            value="View"
-            onPress={() => {
-              router.push("/messages");
-            }}
-          />
-        </IosGroup>
-      )}
+      ) : null}
+      <IosGroup>
+        <IosRow
+          label="Activity"
+          value="View"
+          onPress={() => {
+            router.push("/activity");
+          }}
+        />
+        <IosRow
+          label="Messages"
+          value="View"
+          onPress={() => {
+            router.push("/messages");
+          }}
+        />
+      </IosGroup>
     </YStack>
   );
 }
@@ -350,5 +356,8 @@ function securitySummary(s: Snapshot): { text: string; warn: boolean } {
   if (open !== null) return { text: open, warn: true };
   const unlocked = unlockedSummary(strArr(s.unlockedDoors));
   if (unlocked !== null) return { text: unlocked, warn: true };
-  return { text: "All closed", warn: false };
+  return {
+    text: s.source === "android" ? "None shown open" : "All closed",
+    warn: false,
+  };
 }

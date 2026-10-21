@@ -422,10 +422,19 @@ export async function saveSnapshot(
               source: status.source,
               observedAt: status.observedAt ?? null,
               reportedUpdatedText: status.reportedUpdatedText ?? null,
+              reportedUpdates: status.reportedUpdates ?? {},
+              reportedParkedText: status.reportedParkedText ?? null,
+              parkedAddress: status.parkedAddress ?? null,
+              odometerObservedAt:
+                status.odometerObservedAt ??
+                (status.source === "android"
+                  ? (latest?.odometerObservedAt ?? null)
+                  : null),
               closuresKnown: status.closuresKnown ?? null,
               climateOn: status.climateOn ?? null,
               targetTempF: status.targetTempF ?? null,
               minutesToTarget: status.minutesToTarget ?? null,
+              chargingTargetSoc: status.chargingTargetSoc ?? null,
             }
           : {}),
         capturedAt: status.capturedAt,
@@ -441,7 +450,9 @@ export async function saveSnapshot(
         openWindows: status.openWindows,
         unlockedDoors: status.unlockedDoors,
         rangeKm: status.rangeKm,
-        odometerKm: status.odometerKm,
+        odometerKm:
+          status.odometerKm ??
+          (status.source === "android" ? (latest?.odometerKm ?? null) : null),
         parkedLat: status.parkedLat,
         parkedLng: status.parkedLng,
         parkedAt: status.parkedAt,
@@ -668,6 +679,7 @@ export async function syncMessages(
   accountId: string,
   vw: InboxMessage[],
   complete: boolean,
+  prune = true,
 ): Promise<void> {
   const res = await db.query({
     vwAccounts: { $: { where: { id: accountId } }, messages: {} },
@@ -677,7 +689,15 @@ export async function syncMessages(
   const now = Date.now();
 
   const ops = vw.map((m) => {
-    const prev = byMessageId.get(m.id);
+    const prev =
+      byMessageId.get(m.id) ??
+      (m.id.startsWith("android:")
+        ? existing.find(
+            (row) =>
+              row.title.trim() === m.title.trim() &&
+              (row.body ?? "").trim() === (m.body ?? "").trim(),
+          )
+        : undefined);
     const rowId = prev?.id ?? id();
     const fields = {
       messageId: m.id,
@@ -699,7 +719,7 @@ export async function syncMessages(
     fetchedAts.length > 0 ? Math.min(...fetchedAts) : null;
   const deletions = existing
     .filter((row) => {
-      if (fetchedIds.has(row.messageId)) return false;
+      if (!prune || fetchedIds.has(row.messageId)) return false;
       return (
         complete ||
         (oldestFetchedAt !== null && (row.at ?? 0) >= oldestFetchedAt)

@@ -58,9 +58,9 @@ export default function UpdatesScreen() {
         <Paragraph
           style={{ color: ios.secondaryLabel, fontSize: 15, lineHeight: 20 }}
         >
-          “Updated” is when your car last checked in with VW — automatic, about
-          once a minute. Refreshing also wakes the car, so fresh numbers may
-          keep arriving for a few minutes.
+          {snapshot?.source === "android"
+            ? "Refresh reads the status displayed by myVW. The labels below are myVW’s vehicle report times; they may be older than our most recent read. Refresh does not guarantee waking the vehicle."
+            : "“Updated” is when your car last checked in with VW. Refresh also requests a vehicle wake; fresh numbers may keep arriving for a few minutes."}
         </Paragraph>
 
         <IosButton
@@ -89,41 +89,69 @@ export default function UpdatesScreen() {
 
         {snapshot !== undefined ? (
           <IosGroup>
-            <WhenRow
-              label="Car check-in"
-              at={snapshot.capturedAt ?? null}
-              now={now}
-            />
-            <WhenRow
-              label="Vehicle status"
-              at={snapshot.rvsUpdatedAt ?? null}
-              now={now}
-            />
-            <WhenRow
-              label="Doors"
-              at={snapshot.doorsUpdatedAt ?? null}
-              now={now}
-            />
-            <WhenRow
-              label="Locks"
-              at={snapshot.locksUpdatedAt ?? null}
-              now={now}
-            />
-            <WhenRow
-              label="Windows"
-              at={snapshot.windowsUpdatedAt ?? null}
-              now={now}
-            />
-            <WhenRow
-              label="Battery & charging"
-              at={snapshot.chargeUpdatedAt ?? null}
-              now={now}
-            />
-            <WhenRow
-              label="Parked location"
-              at={snapshot.parkedAt ?? null}
-              now={now}
-            />
+            {snapshot.source === "android" ? (
+              <>
+                <IosRow
+                  label="Vehicle status"
+                  value={snapshot.reportedUpdatedText ?? "—"}
+                  multiline
+                />
+                {Object.entries(
+                  (snapshot.reportedUpdates as
+                    Record<string, string> | null | undefined) ?? {},
+                ).map(([label, value]) => (
+                  <IosRow key={label} label={label} value={value} multiline />
+                ))}
+                <IosRow
+                  label="Parked location"
+                  value={snapshot.reportedParkedText ?? "—"}
+                  multiline
+                />
+                <WhenRow
+                  label="Read from myVW"
+                  at={snapshot.observedAt ?? null}
+                  now={now}
+                />
+              </>
+            ) : (
+              <>
+                <WhenRow
+                  label="Car check-in"
+                  at={snapshot.capturedAt ?? null}
+                  now={now}
+                />
+                <WhenRow
+                  label="Vehicle status"
+                  at={snapshot.rvsUpdatedAt ?? null}
+                  now={now}
+                />
+                <WhenRow
+                  label="Doors"
+                  at={snapshot.doorsUpdatedAt ?? null}
+                  now={now}
+                />
+                <WhenRow
+                  label="Locks"
+                  at={snapshot.locksUpdatedAt ?? null}
+                  now={now}
+                />
+                <WhenRow
+                  label="Windows"
+                  at={snapshot.windowsUpdatedAt ?? null}
+                  now={now}
+                />
+                <WhenRow
+                  label="Battery & charging"
+                  at={snapshot.chargeUpdatedAt ?? null}
+                  now={now}
+                />
+                <WhenRow
+                  label="Parked location"
+                  at={snapshot.parkedAt ?? null}
+                  now={now}
+                />
+              </>
+            )}
             <WhenRow
               label="Received by server"
               at={snapshot.createdAt}

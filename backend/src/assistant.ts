@@ -187,6 +187,8 @@ interface StatusLike {
   minutesToFull?: number | null;
   targetSoc?: number | null;
   odometerKm?: number | null;
+  odometerObservedAt?: number | null | undefined;
+  reportedParkedText?: string | null | undefined;
   openDoors?: string[] | null;
   openWindows?: string[] | null;
   unlockedDoors?: string[] | null;
@@ -239,8 +241,11 @@ function summarizeStatus(s: StatusLike | undefined): string {
   }
   if (s.targetSoc !== null && s.targetSoc !== undefined)
     parts.push(`charge limit ${String(s.targetSoc)}%`);
-  if (s.odometerKm !== null && s.odometerKm !== undefined)
+  if (s.odometerKm !== null && s.odometerKm !== undefined) {
     parts.push(`odometer ${String(kmToMiles(s.odometerKm))} miles`);
+    if (s.source === "android" && s.odometerObservedAt != null)
+      parts.push(`odometer last read ${relativeTime(s.odometerObservedAt)}`);
+  }
   // "open" = physically ajar (doorStatus OPEN), kept distinct from lock state so
   // the model never calls an unlocked-but-closed door "open". Always emit a
   // positive closed statement when nothing is ajar.
@@ -250,7 +255,9 @@ function summarizeStatus(s: StatusLike | undefined): string {
       ? "door and window open/closed details unavailable"
       : openClosures.length > 0
         ? `physically open (ajar): ${openClosures.join(", ")}`
-        : "all doors and windows are closed",
+        : s.source === "android"
+          ? "myVW highlights no openings; individual closed sensor values are unavailable"
+          : "all doors and windows are closed",
   );
   // Per-door unlocked detail only when the vehicle is otherwise locked (a
   // partial unlock); when the whole vehicle is unlocked it's redundant noise.
@@ -259,6 +266,7 @@ function summarizeStatus(s: StatusLike | undefined): string {
     parts.push(`unlocked but closed: ${unlockedDoors.join(", ")}`);
   if (s.parkedAt !== null && s.parkedAt !== undefined)
     parts.push(`parked ${relativeTime(s.parkedAt)}`);
+  else if (s.reportedParkedText) parts.push(s.reportedParkedText);
   if (s.source === "android") {
     parts.push(
       `myVW display may be cached; ${s.reportedUpdatedText ?? "vehicle report time unavailable"}`,
@@ -502,7 +510,7 @@ function systemPrompt(): string {
     "You are a hands-free voice assistant for the user's car.",
     "Your reply is read aloud, so be extremely concise: one short sentence, no markdown, no lists.",
     "You are given the current vehicle status — lock state, open doors/windows, battery, range, odometer, charging/plug state, charge limit, WHETHER CLIMATE IS RUNNING, when it last parked, and when it last reported. Answer status questions (e.g. 'are my doors locked?', 'how many miles on the odometer?', 'how much range?') directly from it WITHOUT calling a tool. In particular, whether climate is on/off is stated in the status — trust it; don't guess. A door that is 'unlocked' (closed but not locked) is NOT 'open' (physically ajar) — never describe an unlocked door as open; report a door as open only if the status lists it under 'physically open'.",
-    "Tools — actions: lock, unlock, start_climate, stop_climate, start_charge, stop_charge, set_charge_limit. Reads: get_parked_location (parked street address), get_activity, get_messages, get_climate (configured target temp), refresh (wake the car for the very latest). Never ask which vehicle — there is only one.",
+    "Tools — actions: lock, unlock, start_climate, stop_climate, start_charge, stop_charge, set_charge_limit. Reads: get_parked_location (parked street address), get_activity, get_messages, get_climate (configured target temp), refresh (read the latest available status; the Android connection cannot force the car awake). Never ask which vehicle — there is only one.",
     "CRITICAL: An action only happens when you CALL ITS TOOL. To lock, unlock, start/stop climate, or start/stop/limit charging you MUST emit the tool call — never answer with words alone. When the user asks for an action, your turn's first move is the tool call, not a sentence.",
     'Action tools only QUEUE the request with the car: they return as soon as it has been SENT, and the car takes a few seconds to actually carry it out. After calling one, tell the user you have SENT or STARTED the request — do NOT claim it is already done, locked, unlocked, on, off, complete, or confirmed. Good: "I\'ve sent the request to lock your doors." / "Starting climate at 70 degrees." Bad: "Done — doors locked." Read/status questions are different — answer those directly.',
     'Your reply is spoken by text-to-speech. Keep NUMBERS as digits — never spell them out (write "70 degrees" not "seventy degrees", "80 percent" not "eighty percent", an odometer of "47,235 miles" not "forty-seven thousand..."). But replace SYMBOLS and abbreviations with words: temperatures as a number then "degrees" (never "70°F" or "70F"), percentages as a number then "percent" (never "80%"), distances in "miles". No markdown. Refer to it only as "your vehicle" or "your car" — never mention its make or model.',
