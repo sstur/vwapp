@@ -53,7 +53,7 @@ def parse_status(top: list[Node], controls: list[Node], vin: str) -> dict:
     if len(battery) != 1 or not 0 <= int(battery[0][1]) <= 100:
         raise BridgeError("UNEXPECTED_UI", "Cannot read a unique battery/range value")
     b = battery[0]
-    charge = [t for t in texts if t in {"Charging", "Not charging", "Charging complete", "Ready to charge"}]
+    charge = [t for t in texts if t in {"Charging", "Not charging", "Charging complete", "Ready to charge", "Plugged in"}]
     timers = [re.fullmatch(r"(?:(\d+)h\s*)?(?:(\d+)m\s*)?to (\d+)%", t) for t in texts]
     timers = [m for m in timers if m and (m[1] or m[2])]
     timer = timers[0] if len(timers) == 1 else None
@@ -65,6 +65,7 @@ def parse_status(top: list[Node], controls: list[Node], vin: str) -> dict:
         "vin": vin, "name": name, "soc": int(b[1]),
         "rangeKm": round(float(b[2]) * (1.609344 if b[3] == "mi" else 1), 3),
         "chargeState": charge[0] if len(charge) == 1 else None,
+        "pluggedIn": True if "Plugged in" in texts or "Charging" in texts else None,
         "minutesToTarget": int(timer[1] or 0) * 60 + int(timer[2] or 0) if timer else None,
         "targetSoc": int(timer[3]) if timer else None,
         "locked": {"Locked": True, "Unlocked": False}.get(lock),

@@ -1,5 +1,6 @@
 import { createRouterClient, implement, ORPCError } from "@orpc/server";
-import { contract, type VehicleDTO } from "@vwapp/contract";
+import { contract, vehicleSchema, type VehicleDTO } from "@vwapp/contract";
+import { z } from "zod";
 import { runAssistant, type VehicleCaller } from "./assistant";
 import { seal, sha256Hex, timingSafeEqual, unseal } from "./crypto";
 import type { AppEnv } from "./env";
@@ -32,6 +33,12 @@ import {
   loginBackoffMs,
   reauth,
 } from "./tokens";
+import {
+  sessionCall,
+  unsupported,
+  usesAndroid,
+  vehicleCall,
+} from "./vehicle/android";
 import {
   VwAuthError,
   vwAwaitCommandResult,
@@ -170,9 +177,35 @@ async function establishSession(
   context: RouterContext,
   username: string,
   password: string,
+  spin?: string,
 ): Promise<{ userKey: string; tokens: VwTokens; vehicles: VehicleDTO[] }> {
   const userKey = await vwUserKey(username);
   const existing = await getAccountByUserKey(context.db, userKey);
+  if (usesAndroid(context.env)) {
+    const matches =
+      existing !== null &&
+      (await storedPasswordMatches(context.env, existing, password));
+    const pin = spin ?? (await storedSpin(context.env, existing));
+    const result = await sessionCall(context.env, existing?.id ?? userKey, {
+      username,
+      password,
+      ...(pin ? { spin: pin } : {}),
+      forceLogin: !matches,
+    });
+    const vehicles = z.array(vehicleSchema).parse(result["vehicles"]);
+    // Tokens are unused in Android mode; retain the schema for direct-provider migration.
+    return {
+      userKey,
+      vehicles,
+      tokens: existing?.tokens ?? {
+        accessToken: "android-managed",
+        refreshToken: null,
+        idToken: null,
+        codeVerifier: null,
+        expiresAt: 0,
+      },
+    };
+  }
   let session: { tokens: VwTokens; vehicles: VehicleDTO[] } | null = null;
   if (
     existing !== null &&
@@ -268,6 +301,8 @@ async function storedSpin(
 const checkCredentials = os.auth.checkCredentials.handler(
   async ({ input, context }) => {
     requireUser(context);
+    // Android signs in once with BOTH password and S-PIN on the next step.
+    if (usesAndroid(context.env)) return { ok: true as const };
     const { userKey, tokens, vehicles } = await establishSession(
       context,
       input.username,
@@ -294,6 +329,7 @@ const login = os.auth.login.handler(async ({ input, context }) => {
     context,
     input.username,
     input.password,
+    input.spin,
   );
 
   // Seal the creds WITH the S-PIN and attach the client (saveLogin). This is
@@ -325,11 +361,15 @@ const login = os.auth.login.handler(async ({ input, context }) => {
     const account = await getAccountByUserKey(context.db, userKey);
     if (account !== null)
       for (const v of stored) {
-        await saveSnapshot(
+        const status = await readStatus(
           context.db,
-          v.id,
-          await readStatus(context.db, context.env, account, v, input.spin),
+          context.env,
+          account,
+          v,
+          input.spin,
         );
+        if (!usesAndroid(context.env))
+          await saveSnapshot(context.db, v.id, status);
       }
   } catch (err) {
     console.error("initial status fetch after login failed", err);
@@ -396,6 +436,16 @@ const refresh = os.vehicle.refresh.handler(async ({ input, context }) => {
   const spin = await requireSpin(context.env, account);
 
   return loggedOp(`refresh vehicle=${vehicle.id}`, async () => {
+    if (usesAndroid(context.env)) {
+      const result = await readStatus(
+        context.db,
+        context.env,
+        account,
+        vehicle,
+        spin,
+      );
+      return result;
+    }
     const tokens = await ensureTokens(context.db, context.env, account);
 
     // Actually poke the car first; its fresh telemetry arrives async via the
@@ -430,6 +480,20 @@ const command = os.vehicle.command.handler(async ({ input, context }) => {
   if (user.account === null)
     throw new ORPCError("UNAUTHORIZED", { message: "not logged in" });
   const vehicle = pickVehicle(user, input.uuid);
+  if (usesAndroid(context.env)) {
+    const result = await vehicleCall(
+      context.env,
+      user.account,
+      vehicle,
+      "lock",
+      { locked: input.action === "lock" },
+      { requestId: input.requestId },
+    );
+    context.waitUntil(
+      snapshotNow(context.db, user.account, context.env, vehicle, ""),
+    );
+    return { ok: true as const, locked: z.boolean().parse(result["locked"]) };
+  }
 
   const creds = JSON.parse(
     await unseal(env.CREDS_ENC_KEY, user.account.sealed),
@@ -658,6 +722,28 @@ const climateStart = os.vehicle.climateStart.handler(
       throw new ORPCError("UNAUTHORIZED", { message: "not logged in" });
     const account = user.account;
     const vehicle = pickVehicle(user, input.uuid);
+    if (usesAndroid(env)) {
+      await vehicleCall(
+        env,
+        account,
+        vehicle,
+        "climate",
+        { enabled: true, tempF: input.tempF },
+        {
+          requestId: input.requestId,
+          completion: {
+            vehicleId: vehicle.id,
+            climate: {
+              kind: "start",
+              durationMin: input.durationMin,
+              tempF: input.tempF,
+              expiresAt: Date.now() + input.durationMin * 60_000,
+            },
+          },
+        },
+      );
+      return { ok: true as const };
+    }
 
     // Adjusting only the duration is a pure reschedule: the cron is what keeps
     // climate warm, so just move the active session's end — no VW round-trip
@@ -768,6 +854,23 @@ const climateStop = os.vehicle.climateStop.handler(
       throw new ORPCError("UNAUTHORIZED", { message: "not logged in" });
     const account = user.account;
     const vehicle = pickVehicle(user, input.uuid);
+    if (usesAndroid(env)) {
+      await vehicleCall(
+        env,
+        account,
+        vehicle,
+        "climate",
+        { enabled: false },
+        {
+          requestId: input.requestId,
+          completion: {
+            vehicleId: vehicle.id,
+            climate: { kind: "stop", reason: "stopped" },
+          },
+        },
+      );
+      return { ok: true as const };
+    }
 
     // A paused session means climate is already off (VW rejected the restart —
     // car in use); ending the session row is all a stop means here, and the VW
@@ -824,6 +927,13 @@ const climateInfo = os.vehicle.climateInfo.handler(
       throw new ORPCError("UNAUTHORIZED", { message: "not logged in" });
     const account = user.account;
     const vehicle = pickVehicle(user, input.uuid);
+    if (usesAndroid(env)) {
+      const result = await vehicleCall(env, account, vehicle, "climateInfo");
+      return {
+        targetTempF: z.number().nullable().parse(result["targetTempF"]),
+      };
+    }
+
     // Carnet-gated since 2026-07-30 (403s with the access token).
     const spin = await requireSpin(env, account);
 
@@ -864,6 +974,19 @@ const chargeStart = os.vehicle.chargeStart.handler(
       throw new ORPCError("UNAUTHORIZED", { message: "not logged in" });
     const account = user.account;
     const vehicle = pickVehicle(user, input.uuid);
+    if (usesAndroid(env)) {
+      await vehicleCall(
+        env,
+        account,
+        vehicle,
+        "charge",
+        { enabled: true },
+        { requestId: input.requestId },
+      );
+      context.waitUntil(snapshotNow(db, account, env, vehicle, ""));
+      return { ok: true as const };
+    }
+
     const spin = await requireSpin(env, account);
 
     let tokens = await ensureTokens(db, env, account);
@@ -901,6 +1024,19 @@ const chargeStop = os.vehicle.chargeStop.handler(async ({ input, context }) => {
     throw new ORPCError("UNAUTHORIZED", { message: "not logged in" });
   const account = user.account;
   const vehicle = pickVehicle(user, input.uuid);
+  if (usesAndroid(env)) {
+    await vehicleCall(
+      env,
+      account,
+      vehicle,
+      "charge",
+      { enabled: false },
+      { requestId: input.requestId },
+    );
+    context.waitUntil(snapshotNow(db, account, env, vehicle, ""));
+    return { ok: true as const };
+  }
+
   const spin = await requireSpin(env, account);
 
   let tokens = await ensureTokens(db, env, account);
@@ -938,6 +1074,21 @@ const setChargeLimit = os.vehicle.setChargeLimit.handler(
       throw new ORPCError("UNAUTHORIZED", { message: "not logged in" });
     const account = user.account;
     const vehicle = pickVehicle(user, input.uuid);
+    if (usesAndroid(env)) {
+      await vehicleCall(
+        env,
+        account,
+        vehicle,
+        "chargeLimit",
+        {
+          targetSoc: input.targetSoc,
+        },
+        { requestId: input.requestId },
+      );
+      context.waitUntil(snapshotNow(db, account, env, vehicle, ""));
+      return { ok: true as const };
+    }
+
     const spin = await requireSpin(env, account);
 
     let tokens = await ensureTokens(db, env, account);
@@ -975,6 +1126,8 @@ const activity = os.vehicle.activity.handler(async ({ input, context }) => {
     throw new ORPCError("UNAUTHORIZED", { message: "not logged in" });
   const account = user.account;
   const vehicle = pickVehicle(user, input.uuid);
+  if (usesAndroid(env)) unsupported();
+
   const spin = await requireSpin(env, account);
 
   // Tier-2 read: needs the S-PIN carnet bearer (the access token 403s).
@@ -1003,6 +1156,8 @@ const messages = os.vehicle.messages.handler(async ({ input, context }) => {
     throw new ORPCError("UNAUTHORIZED", { message: "not logged in" });
   const account = user.account;
   const vehicle = pickVehicle(user, input.uuid);
+  if (usesAndroid(env)) unsupported();
+
   const spin = await requireSpin(env, account);
 
   let tokens = await ensureTokens(db, env, account);
@@ -1039,6 +1194,8 @@ const refreshMessages = os.vehicle.refreshMessages.handler(
       throw new ORPCError("UNAUTHORIZED", { message: "not logged in" });
     const account = user.account;
     const vehicle = pickVehicle(user, input.uuid);
+    if (usesAndroid(env)) unsupported();
+
     const spin = await requireSpin(env, account);
 
     let tokens = await ensureTokens(db, env, account);
@@ -1114,11 +1271,8 @@ async function snapshotNow(
   spin: string,
 ): Promise<void> {
   try {
-    await saveSnapshot(
-      db,
-      vehicle.id,
-      await readStatus(db, env, account, vehicle, spin),
-    );
+    const status = await readStatus(db, env, account, vehicle, spin);
+    if (!usesAndroid(env)) await saveSnapshot(db, vehicle.id, status);
   } catch (err) {
     console.error("post-command snapshot failed", err);
   }
@@ -1169,9 +1323,37 @@ const assistantAsk = os.assistant.ask.handler(async ({ input, context }) => {
   });
 });
 
+const connection = os.vehicle.connection.handler(async ({ context }) => {
+  const user = await getUser(context.db, requireUser(context));
+  if (!user.account) throw new ORPCError("UNAUTHORIZED");
+  if (!usesAndroid(context.env) || !context.env.ANDROID_GATEWAY)
+    return {
+      provider: "direct",
+      activeRequestId: null,
+      activeOperation: null,
+      startedAt: null,
+      queueLength: 0,
+      lastAlarmAt: null,
+    };
+  const response = await context.env.ANDROID_GATEWAY.getByName("phone").fetch(
+    `https://gateway/health?accountId=${user.account.id}`,
+  );
+  return z
+    .object({
+      provider: z.string(),
+      activeRequestId: z.string().nullable(),
+      activeOperation: z.string().nullable(),
+      startedAt: z.number().nullable(),
+      queueLength: z.number(),
+      lastAlarmAt: z.number().nullable(),
+    })
+    .parse(await response.json());
+});
+
 export const router = os.router({
   auth: { checkCredentials, login, me, logout },
   vehicle: {
+    connection,
     refresh,
     command,
     climateStart,

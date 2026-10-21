@@ -13,6 +13,7 @@ import {
 import type { InstaQLEntity } from "@instantdb/react-native";
 import { useMutation } from "@tanstack/react-query";
 import type { AppSchema } from "@vwapp/db";
+import { randomUUID } from "expo-crypto";
 import {
   AnimatePresence,
   H2,
@@ -112,7 +113,7 @@ export function ChargeControl({ s, uuid }: { s: Snapshot; uuid: string }) {
             tone="red"
             disabled={stop.isPending}
             onPress={() => {
-              stop.mutate({ uuid });
+              stop.mutate({ requestId: randomUUID(), uuid });
             }}
             label={stop.isPending ? "Stopping…" : "Stop"}
           />
@@ -122,7 +123,7 @@ export function ChargeControl({ s, uuid }: { s: Snapshot; uuid: string }) {
             icon="bolt.car.fill"
             disabled={start.isPending}
             onPress={() => {
-              start.mutate({ uuid });
+              start.mutate({ requestId: randomUUID(), uuid });
             }}
             label={start.isPending ? "Starting…" : "Charge"}
           />
@@ -140,12 +141,18 @@ export function ChargeControl({ s, uuid }: { s: Snapshot; uuid: string }) {
                 selection={carLimit}
                 onSelectionChange={(next) => {
                   if (next !== carLimit && !setLimit.isPending) {
-                    setLimit.mutate({ uuid, targetSoc: next });
+                    setLimit.mutate({
+                      requestId: randomUUID(),
+                      uuid,
+                      targetSoc: next,
+                    });
                   }
                 }}
                 modifiers={[
                   pickerStyle("menu"),
-                  disabledModifier(setLimit.isPending),
+                  disabledModifier(
+                    setLimit.isPending || s.source === "android",
+                  ),
                 ]}
               >
                 {limitOptions.map((v) => (
@@ -163,6 +170,11 @@ export function ChargeControl({ s, uuid }: { s: Snapshot; uuid: string }) {
         </XStack>
       </XStack>
 
+      {s.source === "android" ? (
+        <Paragraph color="$color10" fontSize="$2">
+          Change the charging limit in the vehicle.
+        </Paragraph>
+      ) : null}
       <AnimatePresence>
         {error ? (
           <Text

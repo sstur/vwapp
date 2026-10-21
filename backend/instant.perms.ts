@@ -24,6 +24,9 @@ const rules = {
       view: "auth.id in data.ref('account.users.id')",
     },
   },
+  vehicleOperations: {
+    allow: { view: "auth.id in data.ref('vehicle.account.users.id')" },
+  },
   snapshots: {
     allow: {
       view: "auth.id in data.ref('vehicle.account.users.id')",

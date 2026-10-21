@@ -7,6 +7,12 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-06-01",
   "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": {
+    "bindings": [{ "name": "ANDROID_GATEWAY", "class_name": "AndroidGateway" }],
+  },
+  "migrations": [
+    { "tag": "android-gateway-v1", "new_sqlite_classes": ["AndroidGateway"] },
+  ],
   "observability": { "enabled": true },
   // Workers AI powers the voice assistant (STT + GLM-5.2 LLM + TTS), reached via
   // env.AI. No key: it bills to the deploy account, which must have Workers AI
@@ -26,5 +32,17 @@
   // cron is safe again. NB: setting "crons": [] here does NOT remove the
   // schedule from a deployed Worker — wrangler treats the empty array as a
   // no-op, so use the dashboard/API if you ever truly need it off.
+  "env": {
+    "integration": {
+      "name": "vwapp-api-integration",
+      "vars": { "VEHICLE_PROVIDER": "android" },
+      "durable_objects": {
+        "bindings": [
+          { "name": "ANDROID_GATEWAY", "class_name": "AndroidGateway" },
+        ],
+      },
+      "triggers": { "crons": [] },
+    },
+  },
   "triggers": { "crons": ["* * * * *"] },
 }

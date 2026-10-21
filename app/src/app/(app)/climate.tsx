@@ -11,6 +11,7 @@ import {
   scaleEffect,
 } from "@expo/ui/swift-ui/modifiers";
 import { useMutation, useQuery } from "@tanstack/react-query";
+import { randomUUID } from "expo-crypto";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useState } from "react";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -185,7 +186,12 @@ export default function ClimateSheet() {
                   Math.max(5, Math.round((endMs - Date.now()) / 60000)),
                 )
               : durationMin;
-          startCmd.mutate({ uuid, tempF, durationMin: effectiveMin });
+          startCmd.mutate({
+            requestId: randomUUID(),
+            uuid,
+            tempF,
+            durationMin: effectiveMin,
+          });
         }}
         label={actionLabel}
       />

@@ -173,6 +173,10 @@ async function ttsToBase64(out: unknown): Promise<string | null> {
 /** The status fields the summary reads — satisfied by both a stored snapshot
  *  record and a live StatusDTO (the refresh result). */
 interface StatusLike {
+  source?: string | null | undefined;
+  observedAt?: number | null | undefined;
+  reportedUpdatedText?: string | null | undefined;
+  closuresKnown?: boolean | null | undefined;
   locked?: boolean | null;
   soc?: number | null;
   rangeKm?: number | null;
@@ -242,9 +246,11 @@ function summarizeStatus(s: StatusLike | undefined): string {
   // positive closed statement when nothing is ajar.
   const openClosures = [...(s.openDoors ?? []), ...(s.openWindows ?? [])];
   parts.push(
-    openClosures.length > 0
-      ? `physically open (ajar): ${openClosures.join(", ")}`
-      : "all doors and windows are closed",
+    s.closuresKnown === false
+      ? "door and window open/closed details unavailable"
+      : openClosures.length > 0
+        ? `physically open (ajar): ${openClosures.join(", ")}`
+        : "all doors and windows are closed",
   );
   // Per-door unlocked detail only when the vehicle is otherwise locked (a
   // partial unlock); when the whole vehicle is unlocked it's redundant noise.
@@ -253,7 +259,15 @@ function summarizeStatus(s: StatusLike | undefined): string {
     parts.push(`unlocked but closed: ${unlockedDoors.join(", ")}`);
   if (s.parkedAt !== null && s.parkedAt !== undefined)
     parts.push(`parked ${relativeTime(s.parkedAt)}`);
-  const updated = s.capturedAt ?? s.createdAt;
+  if (s.source === "android") {
+    parts.push(
+      `myVW display may be cached; ${s.reportedUpdatedText ?? "vehicle report time unavailable"}`,
+    );
+    if (s.observedAt != null)
+      parts.push(`read from myVW ${relativeTime(s.observedAt)}`);
+  }
+  const updated =
+    s.source === "android" ? s.capturedAt : (s.capturedAt ?? s.createdAt);
   if (updated !== null && updated !== undefined)
     parts.push(`last reported ${relativeTime(updated)}`);
   return parts.length > 0 ? parts.join("; ") : "No status details available.";
@@ -557,7 +571,7 @@ export async function runAssistant(args: {
     { role: "system", content: systemPrompt() },
     {
       role: "system",
-      content: `Current vehicle status (cached — may be slightly stale): ${summarizeStatus(snapshot)}. ${describeClimate(climate)}`,
+      content: `Current vehicle status (cached — may be slightly stale): ${summarizeStatus(snapshot)}. ${snapshot?.source === "android" ? `myVW reports climate ${snapshot.climateOn == null ? "unknown" : snapshot.climateOn ? "on" : "off"}.` : describeClimate(climate)}`,
     },
     { role: "user", content: transcript },
   ];

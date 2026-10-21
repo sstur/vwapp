@@ -5,6 +5,7 @@ import type { AppEnv } from "./env";
 import { pollAllVehicles, runClimateKeepalive } from "./poll";
 import { router } from "./router";
 import { getDb } from "./store";
+import { usesAndroid } from "./vehicle/android";
 
 const handler = new RPCHandler(router, {
   plugins: [new CORSPlugin()],
@@ -52,9 +53,17 @@ export default {
     ctx: ExecutionContext,
   ): void {
     const db = getDb(env);
+    if (usesAndroid(env)) {
+      ctx.waitUntil(
+        runClimateKeepalive(db, env).then(() => pollAllVehicles(db, env)),
+      );
+      return;
+    }
     ctx.waitUntil(pollAllVehicles(db, env));
     // Keep user-requested climate sessions alive (restart after the car's
     // ~30-min auto-off; stop at expiry). Independent of the status poll.
     ctx.waitUntil(runClimateKeepalive(db, env));
   },
 };
+
+export { AndroidGateway } from "./vehicle/gateway";

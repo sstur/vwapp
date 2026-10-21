@@ -193,10 +193,18 @@ async function resolveAccountUpsert(
     tokenExpiresAt: tokens.expiresAt,
     codeVerifier: tokens.codeVerifier,
   };
-  const storedVehicles: StoredVehicle[] = vehicles.map((v) => ({
-    ...v,
-    id: existingVehicles.find((x) => x.uuid === v.uuid)?.id ?? id(),
-  }));
+  const storedVehicles: StoredVehicle[] = vehicles.map((v) => {
+    const prior = existingVehicles.find(
+      (x) => x.uuid === v.uuid || x.vin === v.vin,
+    );
+    return {
+      ...v,
+      id: prior?.id ?? id(),
+      uuid: prior?.uuid ?? v.uuid,
+      nickname: v.nickname ?? prior?.nickname ?? null,
+      model: v.model ?? prior?.model ?? null,
+    };
+  });
   return {
     exists: existing !== undefined,
     accountId,
@@ -390,7 +398,7 @@ export async function saveSnapshot(
   db: Db,
   vehicleId: string,
   status: StatusDTO,
-  opts: { force?: boolean } = {},
+  opts: { force?: boolean; snapshotId?: string } = {},
 ): Promise<boolean> {
   const latest = await getLatestSnapshot(db, vehicleId);
   if (
@@ -406,9 +414,20 @@ export async function saveSnapshot(
     return false; // deduped — VW reported nothing new
   }
   await db.transact(
-    tx(db.tx.snapshots[id()])
-      .create({
+    tx(db.tx.snapshots[opts.snapshotId ?? id()])
+      .update({
         createdAt: Date.now(),
+        ...(status.source !== undefined
+          ? {
+              source: status.source,
+              observedAt: status.observedAt ?? null,
+              reportedUpdatedText: status.reportedUpdatedText ?? null,
+              closuresKnown: status.closuresKnown ?? null,
+              climateOn: status.climateOn ?? null,
+              targetTempF: status.targetTempF ?? null,
+              minutesToTarget: status.minutesToTarget ?? null,
+            }
+          : {}),
         capturedAt: status.capturedAt,
         soc: status.soc,
         chargeState: status.chargeState,
@@ -562,15 +581,16 @@ export async function listActiveClimateSessions(
 export async function startClimateSession(
   db: Db,
   vehicleId: string,
-  fields: { tempF: number; expiresAt: number },
+  fields: { tempF: number; expiresAt: number; sessionId?: string },
 ): Promise<void> {
   const prior = await getActiveClimateSession(db, vehicleId);
+  if (fields.sessionId !== undefined && prior?.id === fields.sessionId) return;
   const now = Date.now();
   await db.transact([
     ...(prior !== null
       ? [tx(db.tx.climateSessions[prior.id]).update({ state: "stopped" })]
       : []),
-    tx(db.tx.climateSessions[id()])
+    tx(db.tx.climateSessions[fields.sessionId ?? id()])
       .create({
         tempF: fields.tempF,
         expiresAt: fields.expiresAt,
@@ -742,4 +762,25 @@ export async function setMessageDeleted(
     }),
   );
   return true;
+}
+
+/** Durable, client-readable operation progress; never contains credentials or raw UI. */
+export async function recordVehicleOperation(
+  db: Db,
+  requestId: string,
+  vehicleId: string,
+  fields: {
+    operation: string;
+    state: string;
+    createdAt: number;
+    finishedAt?: number;
+    errorCode?: string;
+    message?: string;
+  },
+): Promise<void> {
+  await db.transact(
+    tx(db.tx.vehicleOperations[requestId])
+      .update(fields)
+      .link({ vehicle: vehicleId }),
+  );
 }

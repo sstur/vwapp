@@ -3,6 +3,7 @@ import { ChargeControl } from "@/components/charge-control";
 import { ClimateControl } from "@/components/climate-control";
 import { IosButton, IosCard, IosGroup, IosRow } from "@/components/ios-list";
 import { LockControl } from "@/components/lock-control";
+import { OperationStatus } from "@/components/operation-status";
 import { VoiceControl } from "@/components/voice-control";
 import { db } from "@/db";
 import { agoLabel, useNow } from "@/hooks/use-now";
@@ -276,9 +277,14 @@ function StatusCards({
       animateOnly={["opacity", "transform"]}
       enterStyle={{ opacity: 0, y: 20 }}
     >
+      <OperationStatus vehicleId={vehicleId} />
       <ChargeControl s={s} uuid={uuid} />
       <LockControl uuid={uuid} locked={s.locked ?? null} />
-      <ClimateControl vehicleId={vehicleId} uuid={uuid} />
+      <ClimateControl
+        vehicleId={vehicleId}
+        uuid={uuid}
+        observedOn={s.climateOn}
+      />
       <IosGroup>
         <IosRow label="Odometer" value={formatMiles(s.odometerKm)} />
         <IosRow
@@ -299,29 +305,37 @@ function StatusCards({
           />
         ) : null}
         <IosRow
-          label="Updated"
-          value={agoLabel(s.capturedAt ?? s.createdAt, now)}
+          label={s.source === "android" ? "Read from myVW" : "Updated"}
+          value={agoLabel(s.observedAt ?? s.capturedAt ?? s.createdAt, now)}
           onPress={() => {
             router.push("/updates");
           }}
         />
       </IosGroup>
-      <IosGroup>
-        <IosRow
-          label="Activity"
-          value="View"
-          onPress={() => {
-            router.push("/activity");
-          }}
-        />
-        <IosRow
-          label="Messages"
-          value="View"
-          onPress={() => {
-            router.push("/messages");
-          }}
-        />
-      </IosGroup>
+      {s.source === "android" ? (
+        <Paragraph color="$color10" fontSize="$2">
+          {s.reportedUpdatedText ?? "Vehicle report time unavailable"}. myVW may
+          show cached data. Activity, messages, and detailed door/window status
+          are not available from this connection.
+        </Paragraph>
+      ) : (
+        <IosGroup>
+          <IosRow
+            label="Activity"
+            value="View"
+            onPress={() => {
+              router.push("/activity");
+            }}
+          />
+          <IosRow
+            label="Messages"
+            value="View"
+            onPress={() => {
+              router.push("/messages");
+            }}
+          />
+        </IosGroup>
+      )}
     </YStack>
   );
 }
@@ -331,6 +345,7 @@ function StatusCards({
  * fallback, individually unlocked doors) as a warning; otherwise reassures.
  */
 function securitySummary(s: Snapshot): { text: string; warn: boolean } {
+  if (s.closuresKnown === false) return { text: "Unavailable", warn: false };
   const open = openSummary(strArr(s.openDoors), strArr(s.openWindows));
   if (open !== null) return { text: open, warn: true };
   const unlocked = unlockedSummary(strArr(s.unlockedDoors));

@@ -71,7 +71,12 @@ export default function DoorsScreen() {
         {!isLoading && errorMessage == null && snapshot === undefined ? (
           <Paragraph color="$color10">No status stored yet.</Paragraph>
         ) : null}
-        {snapshot !== undefined ? (
+        {snapshot?.closuresKnown === false ? (
+          <Paragraph color="$color10">
+            Detailed door and window status is unavailable from this connection.
+            Lock status remains available on Home.
+          </Paragraph>
+        ) : snapshot !== undefined ? (
           <YStack
             gap="$3"
             transition="quick"

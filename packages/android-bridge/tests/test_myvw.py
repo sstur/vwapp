@@ -22,6 +22,12 @@ class StatusTests(unittest.TestCase):
         self.assertIsNone(result["capturedAt"])
         self.assertEqual(result["reportedUpdatedText"], "Updated yesterday")
 
+    def test_paused_charging_reports_plugged_in_without_inventing_unplugged(self):
+        result = parse_status([node("van", "vehicleNameTextView")],
+                              [node("51% | 127 Est. mi"), node("Plugged in"), node("Start charging")], "TESTVIN")
+        self.assertEqual(result["chargeState"], "Plugged in")
+        self.assertTrue(result["pluggedIn"])
+
     def test_other_app_cannot_supply_vehicle_values(self):
         with self.assertRaises(BridgeError):
             parse_status([node("van", "vehicleNameTextView")],
