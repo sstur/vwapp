@@ -1,0 +1,10 @@
+{
+  "serial": "ANDROID_DEVICE_SERIAL",
+  "adb": "/opt/homebrew/bin/adb",
+  "username": "owner@example.com",
+  "vin": "REPLACE_WITH_VEHICLE_VIN",
+  "apiKey": "REPLACE_WITH_A_RANDOM_KEY_OF_AT_LEAST_32_CHARACTERS",
+  "host": "127.0.0.1",
+  "port": 8791,
+  "commandsEnabled": false
+}
