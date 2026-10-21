@@ -1,7 +1,8 @@
 import unittest
 
 from vwbridge.device import BridgeError, Node
-from vwbridge.myvw import PACKAGE, PREFIX, climate_state, parse_status
+from vwbridge.myvw import PACKAGE, PREFIX, MyVW, climate_state, parse_status
+from unittest.mock import Mock, patch
 
 
 def node(text, suffix="", enabled="true", package=PACKAGE):
@@ -27,6 +28,27 @@ class StatusTests(unittest.TestCase):
                               [node("51% | 127 Est. mi"), node("Plugged in"), node("Start charging")], "TESTVIN")
         self.assertEqual(result["chargeState"], "Plugged in")
         self.assertTrue(result["pluggedIn"])
+
+    def test_login_entry_is_not_tapped_again_while_transitioning(self):
+        entry = [node("Log in", "loginButton")]
+        device = Mock()
+        device.nodes.side_effect = [entry, entry, [node("", "maincollapsing")]]
+        driver = MyVW(device, "test@example.com", "")
+        driver.home = Mock()
+        with patch("vwbridge.myvw.time.sleep"):
+            driver.sign_in()
+        device.tap.assert_called_once_with(PACKAGE, **{"resource-id": PREFIX + "loginButton", "class": "android.widget.Button"})
+
+    def test_pre_auth_navigation_failure_releases_only_unused_reservation(self):
+        for started in (False, True):
+            driver = MyVW(None, "test@example.com", "")
+            driver.login_reservation = "account-reservation"
+            driver.authentication_started = started
+            driver._ensure_session = Mock(side_effect=BridgeError("UNEXPECTED_UI", "navigation failed"))
+            clear = Mock()
+            with self.assertRaises(BridgeError):
+                driver.ensure_session({}, Mock(), clear)
+            self.assertEqual(clear.call_count, 0 if started else 1)
 
     def test_other_app_cannot_supply_vehicle_values(self):
         with self.assertRaises(BridgeError):

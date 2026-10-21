@@ -85,6 +85,7 @@ class MyVW:
         self.login_reservation = None
         self.pin_attempted = False
         self.account_verified = False
+        self.authentication_started = False
 
     def enter_pin(self):
         pin = self.credentials.get("spin")
@@ -94,6 +95,7 @@ class MyVW:
             raise BridgeError("PIN_REJECTED", "PIN did not unlock myVW; automatic retries stopped")
         self.reserve_attempt()
         self.pin_attempted = True
+        self.authentication_started = True
         self.device.tap(PACKAGE, **{"resource-id": PREFIX + "pin_entry", "class": "android.widget.EditText"})
         self.device.text(pin)
         deadline = time.monotonic() + 25
@@ -108,6 +110,17 @@ class MyVW:
             self.login_reservation = self.reserve_login(self.username)
 
     def ensure_session(self, credentials, reserve_login, login_succeeded):
+        try:
+            self._ensure_session(credentials, reserve_login, login_succeeded)
+        except Exception:
+            # A navigation failure before starting sign-in is not a failed
+            # credential attempt. Keep backoff once any authentication begins.
+            if self.login_reservation and not self.authentication_started:
+                login_succeeded(self.login_reservation)
+                self.login_reservation = None
+            raise
+
+    def _ensure_session(self, credentials, reserve_login, login_succeeded):
         self.credentials = credentials
         self.reserve_login, self.login_succeeded = reserve_login, login_succeeded
         matched = False
@@ -151,22 +164,25 @@ class MyVW:
         for _ in range(5):
             if by_id(self.snapshot(), "button_signout"):
                 self.tap_id("button_signout")
-                self.device.wait(PACKAGE, **{"resource-id": PREFIX + "loginButton"})
+                self.device.wait(PACKAGE, timeout=45, **{"resource-id": PREFIX + "loginButton", "class": "android.widget.Button"})
                 return
             self.device.scroll(PACKAGE, PREFIX + "scrollView")
         raise BridgeError("UNEXPECTED_UI", "Cannot locate myVW logout")
 
     def sign_in(self):
-        email_sent = password_sent = False
+        email_sent = password_sent = entry_sent = continuation_sent = False
         deadline = time.monotonic() + 150
         while time.monotonic() < deadline:
             nodes = self.device.nodes()
             ids = {n.get("resource-id") for n in nodes if n.get("package") == PACKAGE}
             if any(n.get("resource-id") == "android:id/autofill_save_no" for n in nodes):
                 self.device.tap("android", **{"resource-id": "android:id/autofill_save_no"})
-            elif PREFIX + "loginButton" in ids:
-                self.tap_id("loginButton")
+            elif PREFIX + "loginButton" in ids and not entry_sent:
+                self.authentication_started = True
+                self.device.tap(PACKAGE, **{"resource-id": PREFIX + "loginButton", "class": "android.widget.Button"})
+                entry_sent = True
             elif "input_email" in ids and not email_sent:
+                self.authentication_started = True
                 self.device.tap(PACKAGE, **{"resource-id": "input_email"})
                 self.device.shell("input", "keyevent", "KEYCODE_MOVE_END")
                 self.device.shell("input", "keyevent", "--longpress", "KEYCODE_SHIFT_LEFT", "KEYCODE_MOVE_HOME")
@@ -175,6 +191,7 @@ class MyVW:
                 self.device.tap(PACKAGE, **{"resource-id": "next-btn"})
                 email_sent = True
             elif "password" in ids and not password_sent:
+                self.authentication_started = True
                 self.device.tap(PACKAGE, **{"resource-id": "password"})
                 self.device.text(self.credentials["password"])
                 self.device.shell("input", "keyevent", "4")
@@ -182,8 +199,9 @@ class MyVW:
                 password_sent = True
             elif PREFIX + "title_pin_management" in ids:
                 self.enter_pin()
-            elif PREFIX + "continueButton" in ids:
+            elif PREFIX + "continueButton" in ids and not continuation_sent:
                 self.tap_id("continueButton")
+                continuation_sent = True
             elif PREFIX + "maincollapsing" in ids or any(n.get("text") == "Garage" for n in nodes):
                 self.home()
                 return

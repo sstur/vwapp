@@ -92,7 +92,8 @@ needed, and selects the exact VIN before each vehicle operation. It reuses the
 current session. `forceLogin` in credentials is for the trusted cloud login flow
 when a submitted password differs from the encrypted saved copy; ordinary jobs
 must omit it. A password/PIN attempt reserves a 15-minute backoff **before typing**,
-cleared only after successful identity verification. Credentials are held only in
+cleared after successful identity verification. A navigation failure before any
+authentication begins releases its unused reservation. Credentials are held only in
 memory for that job and never written to the journal/logs. Arbitrary Unicode
 credentials and literal `%s` are rejected before logout because ADB's text input
 cannot reliably enter them. MFA/CAPTCHA/unknown onboarding returns a human-action
@@ -222,3 +223,17 @@ For a rollback, disable commands in the Mac config and restart the bridge after
 any active job finishes. Do not reset the journal or replay an uncertain write.
 Reverting `VEHICLE_PROVIDER` restores the old direct implementation, whose VW
 integrity limitation still applies; it is not a working emergency fallback.
+
+## Validation record
+
+Validated on 2026-10-21 with the stock Pixel 8 and the supported myVW version:
+account verification and automatic sign-in from the logged-out screen; status;
+lock/unlock; climate on/off and setpoint changes; charging stop/start; authenticated
+cloud transport; duplicate intent replay; and InstantDB updates visible in the
+custom iOS app. A 20-second tunnel outage during an app-initiated refresh produced
+retriable transport errors, then completed the same phone job exactly once.
+
+The Mac service also restarted with its journal retained and with no account email
+or VIN in its host configuration. Vehicle state at the end of command testing was
+charging, climate off at 72°F, and locked on later reads after the unlock test. These are myVW observations, not physical telemetry
+independently measured by this service.
