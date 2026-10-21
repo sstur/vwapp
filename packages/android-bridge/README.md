@@ -237,3 +237,6 @@ The Mac service also restarted with its journal retained and with no account ema
 or VIN in its host configuration. Vehicle state at the end of command testing was
 charging, climate off at 72°F, and locked on later reads after the unlock test. These are myVW observations, not physical telemetry
 independently measured by this service.
+
+Multi-account switching is implemented, but only one real VW account was available
+for live validation. The replacement Android device still needs its own validation.

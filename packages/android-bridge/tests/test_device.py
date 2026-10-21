@@ -50,12 +50,25 @@ class DeviceTests(unittest.TestCase):
         import shlex
         self.assertEqual(shlex.split(argv[4]), ["input", "text", secret.replace(" ", "%s")])
 
+    @patch.object(Device, "run")
     @patch.object(Device, "shell")
-    def test_ui_dump_cleanup_even_if_parse_fails(self, shell):
-        shell.side_effect = ["", "invalid XML", ""]
+    def test_ui_dump_cleanup_even_if_parse_fails(self, shell, run):
+        shell.side_effect = ["", "invalid XML"]
         with self.assertRaises(BridgeError):
             Device("test-device")._nodes_once()
-        self.assertEqual(shell.call_args.args[:2], ("rm", "-f"))
+        self.assertTrue(run.call_args.args[1].startswith("rm -f /data/local/tmp/vwbridge-"))
+        self.assertFalse(run.call_args.kwargs["enforce_deadline"])
+
+    @patch("vwbridge.device.subprocess.run")
+    def test_expired_job_still_removes_temporary_ui_dump(self, run):
+        run.return_value = subprocess.CompletedProcess([], 0, "", "")
+        device = Device("test-device")
+        device.deadline = 0
+        with self.assertRaises(BridgeError) as error:
+            device._nodes_once()
+        self.assertEqual(error.exception.code, "JOB_TIMEOUT")
+        run.assert_called_once()
+        self.assertTrue(run.call_args.args[0][-1].startswith("rm -f /data/local/tmp/vwbridge-"))
 
     @patch.object(Device, "nodes")
     @patch.object(Device, "shell")

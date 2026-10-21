@@ -78,8 +78,8 @@ class Device:
         self.adb = adb
         self.deadline = None
 
-    def run(self, *args: str, timeout: float = 30) -> str:
-        if self.deadline is not None:
+    def run(self, *args: str, timeout: float = 30, enforce_deadline: bool = True) -> str:
+        if enforce_deadline and self.deadline is not None:
             remaining = self.deadline - time.monotonic()
             if remaining <= 0:
                 raise BridgeError("JOB_TIMEOUT", "Phone job exceeded its execution budget")
@@ -116,7 +116,7 @@ class Device:
             return parse_nodes(self.shell("cat", path))
         finally:
             try:
-                self.shell("rm", "-f", path, timeout=5)
+                self.run("shell", shlex.join(["rm", "-f", path]), timeout=5, enforce_deadline=False)
             except BridgeError:
                 pass
 
