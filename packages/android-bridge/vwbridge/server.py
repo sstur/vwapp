@@ -17,6 +17,7 @@ import threading
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from .jobs import Jobs, configure_logging
 from .device import BridgeError, Device
 from .myvw import MyVW, now
 
@@ -87,6 +88,7 @@ class BridgeServer(ThreadingHTTPServer):
         self.config, self.driver, self.journal = config, driver, journal
         self.device_lock = threading.Lock()
         self.clients = threading.BoundedSemaphore(16)
+        self.jobs = Jobs(self)
         super().__init__(address, Handler)
 
     def process_request(self, request, client_address):
@@ -142,8 +144,20 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if not self.authorized():
             return
+        if self.path == "/v2/health":
+            self.reply(200, {"service": "vw-android-bridge", "apiVersion": 2,
+                             "activeRequestId": self.server.jobs.active, "lastJob": self.server.jobs.last,
+                             "commandsEnabled": self.server.config.get("commandsEnabled", False)})
+            return
+        if self.path.startswith("/v2/jobs/"):
+            result = self.server.jobs.get(self.path.removeprefix("/v2/jobs/"))
+            self.reply(200 if result else 404, result or {"error": "NOT_FOUND"})
+            return
         if self.path.startswith("/v1/requests/"):
             self.reply(*self.server.journal.get(self.path.removeprefix("/v1/requests/")))
+            return
+        if self.path == "/v1/status" and not self.server.config.get("vin"):
+            self.reply(410, {"error": "USE_V2_JOBS"})
             return
         if self.path not in {"/health", "/v1/status"}:
             self.reply(404, {"error": "NOT_FOUND"})
@@ -169,6 +183,22 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self.authorized():
             return
+        if self.path == "/v2/jobs":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 0 < length <= 8192 or self.headers.get("Transfer-Encoding"):
+                    raise ValueError()
+                body = json.loads(self.rfile.read(length))
+                result = self.server.jobs.submit(body)
+                self.reply(202 if result["state"] == "running" else 200, result)
+            except (ValueError, TimeoutError):
+                self.reply(400, {"error": "INVALID_REQUEST"})
+            except BridgeError as exc:
+                self.reply(409 if exc.code in {"DEVICE_BUSY", "IDEMPOTENCY_CONFLICT"} else 400,
+                           {"error": exc.code, "message": str(exc)})
+            except Exception:
+                self.reply(500, {"error": "INTERNAL_ERROR"})
+            return
         if self.path != "/v1/climate":
             self.reply(404, {"error": "NOT_FOUND"})
             return
@@ -179,7 +209,7 @@ class Handler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", "0"))
             if not 0 < length <= 2048 or self.headers.get("Transfer-Encoding"):
                 raise ValueError()
-            body = validate_command(json.loads(self.rfile.read(length)), self.server.config["vin"])
+            body = validate_command(json.loads(self.rfile.read(length)), self.server.config.get("vin", ""))
         except (ValueError, TimeoutError):
             self.reply(400, {"error": "INVALID_REQUEST"})
             return
@@ -225,10 +255,6 @@ def main():
     config = json.loads(args.config.read_text())
     if not isinstance(config.get("apiKey"), str) or len(config["apiKey"]) < 32:
         parser.error("apiKey must contain at least 32 random characters")
-    if not re.fullmatch(r"[A-HJ-NPR-Z0-9]{17}", config.get("vin", "")):
-        parser.error("A valid VIN is required")
-    if not isinstance(config.get("username"), str) or "@" not in config["username"]:
-        parser.error("A VW account email is required")
     host = config.get("host", "127.0.0.1")
     address = ipaddress.ip_address(host)
     if address.version != 4 or not (address.is_loopback or address in ipaddress.ip_network("100.64.0.0/10")):
@@ -240,7 +266,8 @@ def main():
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
         parser.error("A bridge is already running with this configuration")
-    driver = MyVW(Device(config["serial"], config.get("adb", "adb")), config["username"], config["vin"])
+    driver = MyVW(Device(config["serial"], config.get("adb", "adb")), config.get("username", ""), config.get("vin", ""))
+    configure_logging(state / "events.jsonl")
     journal = Journal(state / "requests.sqlite3")
     server = BridgeServer((host, config.get("port", 8791)), config, driver, journal)
     print(f"VW bridge listening on {host}:{server.server_port}", flush=True)

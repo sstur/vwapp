@@ -76,8 +76,14 @@ class Device:
             raise BridgeError("CONFIGURATION", "An explicit Android serial is required")
         self.serial = serial
         self.adb = adb
+        self.deadline = None
 
     def run(self, *args: str, timeout: float = 30) -> str:
+        if self.deadline is not None:
+            remaining = self.deadline - time.monotonic()
+            if remaining <= 0:
+                raise BridgeError("JOB_TIMEOUT", "Phone job exceeded its execution budget")
+            timeout = min(timeout, remaining)
         try:
             result = subprocess.run([self.adb, "-s", self.serial, *args],
                                     capture_output=True, text=True, timeout=timeout)
@@ -92,6 +98,18 @@ class Device:
         return self.run("shell", shlex.join(args), timeout=timeout)
 
     def nodes(self) -> list[Node]:
+        # UIAutomator occasionally fails while an app animates. Re-reading is safe;
+        # input actions are never automatically retried.
+        for attempt in range(3):
+            try:
+                return self._nodes_once()
+            except BridgeError as exc:
+                if exc.code not in {"DEVICE_UNAVAILABLE", "UI_UNAVAILABLE"} or attempt == 2:
+                    raise
+                time.sleep(1)
+        raise BridgeError("UI_UNAVAILABLE", "UI hierarchy unavailable")
+
+    def _nodes_once(self) -> list[Node]:
         path = f"/data/local/tmp/vwbridge-{uuid.uuid4().hex}.xml"
         try:
             self.shell("uiautomator", "dump", "--compressed", path)

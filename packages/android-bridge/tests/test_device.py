@@ -54,7 +54,7 @@ class DeviceTests(unittest.TestCase):
     def test_ui_dump_cleanup_even_if_parse_fails(self, shell):
         shell.side_effect = ["", "invalid XML", ""]
         with self.assertRaises(BridgeError):
-            Device("test-device").nodes()
+            Device("test-device")._nodes_once()
         self.assertEqual(shell.call_args.args[:2], ("rm", "-f"))
 
     @patch.object(Device, "nodes")

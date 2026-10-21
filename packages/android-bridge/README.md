@@ -1,26 +1,21 @@
-# myVW Android UI bridge
+# myVW Android bridge
 
-A deterministic Python service on the computer attached to a stock Android phone.
-The official US myVW app owns login, integrity checks, session renewal, and VW
-network requests. The bridge uses ADB accessibility dumps and ordinary UI input;
-there is no agent, root, patched APK, or injected code at runtime.
+A deterministic service controlling the official US myVW Android app over USB.
+No root, app patch, injected code, VW HTTP client, or AI agent runs on the phone.
 
-Implemented: account/VIN verification, battery and charging summary, lock-state
-reading, climate-state reading, and climate on/off at the existing setpoint.
-There is no temperature change, charging command, door command, account switching,
-password-login endpoint, Worker integration, or Cloudflare tunnel yet.
+The cloud Worker authenticates the mobile user, retrieves their encrypted VW
+credentials, and sends a vehicle intent to a durable cloud coordinator. The
+coordinator submits a short HTTPS request through a named Cloudflare Tunnel to
+this service, then polls the job. Results update InstantDB and stream to the app.
+Neither a mobile disconnect nor a tunnel timeout reissues an accepted command.
 
-## Setup
+## Host setup
 
-Requires Python 3.10+, Android platform tools, and a USB-authorized phone with the
-US myVW app installed from Google Play. Complete its login and initial PIN flow.
-Leave the phone unlocked. The bridge can wake the screen but cannot unlock a
-secure keyguard. It does not change screen-lock settings or reset app data.
-
-On macOS, install platform tools with `brew install --cask android-platform-tools`.
-Clone this repository, then work from `packages/android-bridge`:
+Python 3.10+ and Android platform tools are required. On macOS:
 
 ```sh
+brew install --cask android-platform-tools
+brew install cloudflared
 mkdir -p ~/.config/vw-android-bridge
 chmod 700 ~/.config/vw-android-bridge
 cp config.example.json ~/.config/vw-android-bridge/config.json
@@ -29,99 +24,121 @@ adb devices -l
 python3 -c 'import secrets; print(secrets.token_urlsafe(32))'
 ```
 
-Edit the private config with the device serial, ADB path, VW account email,
-vehicle VIN, and generated API key. Use `127.0.0.1` for SSH forwarding or the
-computer's Tailscale IPv4 address for tailnet access. Other bind addresses are
-rejected. Enable `commandsEnabled` only when ready to operate the vehicle.
-The config contains no VW password or PIN.
+Set `serial`, `adb`, `apiKey`, and the bind address in the private config. Use
+loopback with a local tunnel, or the Mac's Tailscale IPv4. Enable `commandsEnabled`
+when ready. No VW email, VIN, password, or PIN is needed in the v2 host config.
+Install US myVW from Google Play and authorize USB debugging. Initial permission
+and onboarding screens may need a person. Keep the device unlocked; the bridge
+wakes the screen but does not bypass its secure keyguard or change system settings.
 
 ```sh
-PYTHONDONTWRITEBYTECODE=1 python3 -m vwbridge.server \
-  --config ~/.config/vw-android-bridge/config.json
+python3 install_service.py --config ~/.config/vw-android-bridge/config.json
+python3 install_tunnel.py --token-file ~/.config/vw-android-bridge/tunnel-token
 ```
 
-For a macOS login service, run `python3 install_service.py --config
-~/.config/vw-android-bridge/config.json`. It installs the per-user LaunchAgent
-`com.vwapp.android-bridge`, restarting the service after crashes. It runs when that
-Mac user is logged in; this is not a system boot daemon. Startup/error logs and
-the SQLite request journal live beside the config. Stop and remove the agent with
-the same installer command plus `--stop`; config and journal are retained.
+The tunnel token file must have mode 600. Configure a **named** Cloudflare Tunnel
+with the chosen hostname pointing to the service, plus a final `http_status:404`
+ingress rule, and a proxied CNAME to `<tunnel-id>.cfargotunnel.com`. The two macOS
+LaunchAgents restart after crashes and at user login. They are not boot daemons;
+FileVault/login and a locked phone still require physical access after a reboot.
 
-After code updates, restart with:
+After updating code:
 
 ```sh
 launchctl kickstart -k gui/$(id -u)/com.vwapp.android-bridge
 ```
 
-## API
+Use the installers' `--stop` flag to remove their LaunchAgents. Private config and
+state are retained. Do not delete the journal to retry an uncertain command.
 
-All endpoints require `Authorization: Bearer <apiKey>`. Transport is plain HTTP
-restricted to loopback/SSH or the encrypted Tailscale network. Do not publish this
-HTTP listener on the public internet. There is no generic shell, tap, screenshot,
-or credential-reading endpoint.
+## API v2
 
-| Endpoint | Behavior |
-| --- | --- |
-| `GET /health` | Device connectivity and supported capabilities; does not imply a valid VW session |
-| `GET /v1/status` | Verify the signed-in account, select the configured VIN, and read the app's status and climate panel |
-| `POST /v1/climate` | Set climate on/off, wait for controls to settle, and reopen the panel to verify app-reported state |
-| `GET /v1/requests/<requestId>` | Retrieve a command's persisted result or its pending state |
+Every endpoint requires `Authorization: Bearer <apiKey>` (a random 256-bit-or-more
+key). The Worker stores its copy as a secret; the mobile app never receives it.
+Public transport must be HTTPS. There are no generic shell/tap/screenshot APIs.
+Bodies are bounded; only one phone operation can execute at a time.
 
-Climate body:
+- `GET /v2/health`: service version, active request, last job, command enablement.
+  This is service liveness, **not** proof of an unlocked phone or working VW login.
+- `POST /v2/jobs`: validate, persist admission, return 202 immediately. A busy
+  phone returns `DEVICE_BUSY` without reserving the ID; retry the same request.
+- `GET /v2/jobs/<requestId>`: `running`, `succeeded` with `result`, or `failed`
+  with `error: {code, message, retryable}`. Requires the same service key.
+
+Example body (secrets shown only as placeholders):
 
 ```json
 {
-  "requestId": "a-new-uuid-for-this-intent",
+  "requestId": "a-unique-uuid-for-this-intent",
+  "operation": "climate",
+  "credentials": {
+    "username": "owner@example.com",
+    "password": "...",
+    "spin": "1234"
+  },
   "vin": "YOUR_17_CHARACTER_VIN",
-  "enabled": true
+  "params": { "enabled": true, "tempF": 72 }
 }
 ```
 
-Use a new request ID for each new intent. Repeat the **same ID and same body**
-after a client disconnect; completed results are returned without reissuing the
-command. Reusing an ID with different parameters returns `IDEMPOTENCY_CONFLICT`.
-An in-flight request interrupted by service restart becomes `OUTCOME_UNKNOWN`.
-Inspect status before deciding on a new intent; never blindly generate another ID
-to retry an unknown outcome. Journal rows persist until explicitly removed.
+Operations: `session` (VIN null, returns visible garage vehicles), `status`,
+`climateInfo`, `climate` (`enabled`, optional `tempF`), `lock` (`locked`), and
+`charge` (`enabled`). `chargeLimit` currently returns `UNSUPPORTED_OPERATION`;
+this stock-app layout has no validated charge-limit UI. Activity, inbox sync,
+detailed closures, odometer, and location coordinates are not implemented.
 
-Only one UI operation runs at a time. Overlapping operations receive HTTP 409
-`DEVICE_BUSY`; they are not queued. Requests continue and save their result if the
-client disconnects. Allow up to 300 seconds for a command; the vehicle can take
-minutes to respond. Status reads also take tens of seconds because the app is
-navigated and its account and VIN are verified each time.
+The service verifies the profile email, switches accounts through the app when
+needed, and selects the exact VIN before each vehicle operation. It reuses the
+current session. `forceLogin` in credentials is for the trusted cloud login flow
+when a submitted password differs from the encrypted saved copy; ordinary jobs
+must omit it. A password/PIN attempt reserves a 15-minute backoff **before typing**,
+cleared only after successful identity verification. Credentials are held only in
+memory for that job and never written to the journal/logs. Arbitrary Unicode
+credentials and literal `%s` are rejected before logout because ADB's text input
+cannot reliably enter them. MFA/CAPTCHA/unknown onboarding returns a human-action
+error rather than guessing through an authentication screen.
 
-Example, after loading the private key into `VW_BRIDGE_KEY`:
+### Idempotency and recovery
 
-```sh
-curl --fail-with-body -H "Authorization: Bearer $VW_BRIDGE_KEY" \
-  http://ibiza:8791/v1/status
-```
+Keep the same request ID and identical parameters after a lost response. A
+completed result returns immediately; an in-flight duplicate observes the same
+job; changed parameters return `IDEMPOTENCY_CONFLICT`. SQLite stores keyed request
+fingerprints and results, **not credentials**. A crash marks unfinished jobs
+`OUTCOME_UNKNOWN`. A subsequent status read must reconcile an uncertain vehicle
+before another write is accepted. Commands are never blindly retried.
 
-Status is **what the app reports**, which may be cached. `observedAt` is when the
-bridge read the UI. `reportedUpdatedText` is the app's displayed update label;
-`capturedAt` stays null because that label does not reliably specify a full date
-and timezone. `minutesToTarget` is the displayed time to `targetSoc`, not necessarily
-time to a full battery. Unavailable fields are null. No forced vehicle refresh is
-implemented. Climate confirmation is based on the app after its pending state
-ends, not an independent physical measurement.
+UI selection is by package, exact resource IDs/text, and unique visible bounds.
+Reads tolerate transient UI-dump failures; taps never auto-retry. Scroll distances
+are relative to the identified container. Unknown/ambiguous screens fail closed.
+Each job has an eight-minute execution budget; command confirmation has shorter
+bounded waits. A VW failure, disconnect, locked screen, version change, and
+uncertain command produce distinct error codes.
 
-## Moving to another phone
+The supported selector profile is English US myVW `2026.9.29-9674`. An app update
+returns `APP_VERSION_CHANGED` until its layout is reviewed. The verified device
+is a stock Pixel 8 running Android 17; no device-specific coordinates are used.
+A replacement phone needs Play installation, USB authorization, a serial config
+change, and validation. Login credentials will come from the cloud on demand.
 
-1. Install the official US myVW app from Play, sign in, and complete onboarding.
-2. Enable USB debugging and authorize the Mac. Do not reset or modify firmware.
-3. Stop the bridge, change only `serial` in its private config, and restart it.
-4. Run a status read and a supervised command/state-restoration test.
+### Data semantics
 
-There are no Pixel-specific coordinates or firmware dependencies. Tap locations
-come from the current UI hierarchy; scrolling is relative to the scroll container.
-The verified app layout is English US myVW `2026.9.29-9674`. A version change
-returns `APP_VERSION_CHANGED` until selectors are reviewed. Different screen sizes
-and the replacement device still need validation; unsupported screens fail closed.
+Status is what **myVW displays**, which may be cached. `observedAt` is the UI-read
+time; `reportedUpdatedText` preserves myVW's label. `capturedAt` is null because
+the label does not identify a reliable date/timezone. Missing telemetry remains
+unknown. `minutesToTarget` refers to the selected charging limit, not necessarily
+100%. Command verification is app-reported state after its pending state ends,
+not an independent physical measurement. No force-refresh/wake command is claimed.
 
-Existing sessions are reused. `AUTH_REQUIRED` or `PIN_REQUIRED` means a human must
-complete that prompt in the app. Wrong accounts produce `ACCOUNT_MISMATCH`; the
-bridge never silently logs out or replaces an account. Automatic login/account
-switching is a later extension.
+### Diagnostics
+
+`~/.config/vw-android-bridge/state/events.jsonl` contains rotated structured logs
+(request ID, operation, result, error code, duration). The SQLite journal lives in
+the same private directory. Service and tunnel startup logs live beside the config.
+Logs do not include credentials, raw UI, account email, or VIN. The config folder
+must remain private; job results themselves contain vehicle data.
+
+Legacy `/v1/status`, `/v1/climate`, `/v1/requests/<id>` remain for the original
+prototype only when a username/VIN is configured. New integrations use v2.
 
 ## Development
 
@@ -129,30 +146,12 @@ switching is a later extension.
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
 ```
 
-Tests cover app/element matching, ambiguous UI, redaction, unknown freshness,
-authentication, request validation, busy handling, idempotency, and crash recovery.
-They do not call VW or operate a vehicle.
+Tests cover safe selectors, command validation, private credentials, concurrency,
+idempotency, durable login backoff, and crash recovery. Local setup utility:
+`python3 -m vwbridge.device dump|tap|launch|text`, using `VW_ANDROID_SERIAL` and
+`ADB_PATH`. Text comes from stdin. Do not save raw screenshots/hierarchies in git.
 
-`python3 -m vwbridge.device dump|tap|launch|text` is a local setup utility, using
-`VW_ANDROID_SERIAL` and `ADB_PATH`. It is not available through HTTP. Text input is
-read from stdin; diagnostic password nodes are redacted. Do not save raw UI dumps
-or screenshots in the repository, because they can contain account and location data.
-
-References: [ADB documentation](https://developer.android.com/tools/adb) and
-[UI Automator](https://developer.android.com/training/testing/other-components/ui-automator).
-
-## Verified on 2026-10-21
-
-Pixel 8, Android 17, locked bootloader, official Play-installed US myVW
-`2026.9.29-9674`. Fresh login and PIN onboarding succeeded. From another computer
-over Tailscale, unauthenticated health returned 401 and authenticated status
-returned 200 in approximately 40 seconds. Climate on and then off each completed
-in 55 seconds, with the final state off. Replaying the on request returned its
-saved result immediately. Restarting both the app and the host service preserved
-the login, and a subsequent status read succeeded without re-entering credentials.
-The command journal also survived the service restart. All 18 automated tests
-passed locally and on the host.
-
-This proves the status/climate path on this device and app version. Long-term
-session renewal, lock/unlock, charging commands, account switching, and replacement
-device behavior have not been verified.
+See [ADB](https://developer.android.com/tools/adb),
+[UI Automator](https://developer.android.com/training/testing/other-components/ui-automator),
+[Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/get-started/create-remote-tunnel-api/),
+and [Durable Object alarms](https://developers.cloudflare.com/durable-objects/api/alarms/).
