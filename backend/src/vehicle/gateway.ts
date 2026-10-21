@@ -22,6 +22,7 @@ interface Pending {
   createdAt: number;
   queuedAt?: number;
   terminal?: JobResult;
+  submissionAttempted?: boolean;
 }
 export class AndroidGateway extends DurableObject<AppEnv> {
   override async fetch(request: Request): Promise<Response> {
@@ -159,9 +160,12 @@ export class AndroidGateway extends DurableObject<AppEnv> {
           requestId: job.requestId,
           state: "failed",
           error: {
-            code: "OUTCOME_UNKNOWN",
-            message:
-              "Phone did not complete within ten minutes. Check status before a new command.",
+            code: pending.submissionAttempted
+              ? "OUTCOME_UNKNOWN"
+              : "BRIDGE_UNAVAILABLE",
+            message: pending.submissionAttempted
+              ? "Phone did not complete within ten minutes. Check status before a new command."
+              : "Could not reach the phone service. No command was submitted.",
             retryable: false,
           },
         };
@@ -179,7 +183,7 @@ export class AndroidGateway extends DurableObject<AppEnv> {
         let response = await fetch(`${base}/v2/jobs/${job.requestId}`, {
           headers,
           signal: AbortSignal.timeout(8000),
-          redirect: "error",
+          redirect: "manual",
         });
         if (response.status === 404) {
           stage = "credentials";
@@ -187,10 +191,12 @@ export class AndroidGateway extends DurableObject<AppEnv> {
             JSON.parse(await unseal(this.env.CREDS_ENC_KEY, job.sealed)),
           );
           stage = "bridge_submit";
+          pending.submissionAttempted = true;
+          await this.ctx.storage.put("pending", pending);
           response = await fetch(`${base}/v2/jobs`, {
             method: "POST",
             headers,
-            redirect: "error",
+            redirect: "manual",
             signal: AbortSignal.timeout(8000),
             body: JSON.stringify({
               requestId: job.requestId,
@@ -202,6 +208,20 @@ export class AndroidGateway extends DurableObject<AppEnv> {
           });
         }
         if (
+          response.status === 401 ||
+          (response.status >= 300 && response.status < 400)
+        ) {
+          result = {
+            requestId: job.requestId,
+            state: "failed",
+            error: {
+              code: "BRIDGE_CONFIGURATION",
+              message:
+                "Phone service rejected authentication or redirected the request. No redirect was followed.",
+              retryable: false,
+            },
+          };
+        } else if (
           response.status === 409 ||
           response.status === 400 ||
           response.status === 403

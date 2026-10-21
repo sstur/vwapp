@@ -155,3 +155,70 @@ See [ADB](https://developer.android.com/tools/adb),
 [UI Automator](https://developer.android.com/training/testing/other-components/ui-automator),
 [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/get-started/create-remote-tunnel-api/),
 and [Durable Object alarms](https://developers.cloudflare.com/durable-objects/api/alarms/).
+
+## Cloud and mobile integration
+
+In `backend/`, configure Worker secrets `ANDROID_BRIDGE_URL` (the named tunnel's
+HTTPS origin) and `ANDROID_BRIDGE_KEY` (the Mac's `apiKey`). Keep the existing
+`INSTANT_APP_ID`, `INSTANT_ADMIN_TOKEN`, and `CREDS_ENC_KEY`. Set the Worker variable
+`VEHICLE_PROVIDER=android` to select this provider. There is no automatic fallback
+to the blocked VW HTTP endpoints. The `ANDROID_GATEWAY` Durable Object binding and
+SQLite migration are included in `wrangler.jsonc`.
+
+The optional `integration` environment uses a separate Worker/coordinator with no
+cron. It can share the database for supervised tests, but do not run concurrent
+control tests against integration and production. They share one physical phone;
+the Mac's device lock is the final concurrency boundary.
+
+The public app RPC keeps its vehicle-level contract. Each command accepts an
+optional UUID `requestId`; mobile controls generate one per user intent. Reuse
+that ID after a network failure. Never generate a new ID merely to retry an
+uncertain command. The coordinator persists encrypted credentials while a job is
+pending, serializes operations, and admits at most three waiting interactive
+requests. Background work skips a busy queue. Waiting commands expire after two
+minutes without being sent. Durable alarms finish accepted work even if the app
+closes; snapshots and operation progress land in InstantDB. A status read is also
+the reconciliation step after an uncertain write.
+
+The `vehicle.connection` RPC exposes account-scoped coordinator progress, queue
+length, and last alarm time. The app's operation card shows a request ID on failure;
+use that ID to correlate Worker logs with Mac logs/journal. An unavailable phone,
+locked screen, expired login, changed myVW version, and unconfirmed vehicle command
+are distinct failures. A service health response alone does not validate them.
+
+Status polling runs every five minutes. Managed climate sessions are checked each
+minute while active. These intervals include phone UI latency; this is not a
+real-time transport. Keep the phone connected, charged, online, and unlocked.
+A person must handle any secure lock, new USB authorization, or unexpected MFA.
+The bridge does not weaken the phone's lock settings.
+
+Run the cloud smoke test (only on your own vehicle/account):
+
+```sh
+cd backend
+API_URL=https://YOUR-WORKER.workers.dev/rpc \
+  node --env-file=../.env --env-file=.dev.vars scripts/android-smoke.ts
+```
+
+Adding `--controls` starts climate briefly, checks duplicate-request replay, and
+restores climate off in `finally`; it requires climate initially off and a known
+setpoint. It verifies cloud login, phone status, and the resulting database rows
+without logging credentials or VINs. The mobile app ships through a native
+TestFlight build, as required by the repository's release workflow.
+
+### Replacement phone checklist
+
+1. Install official US myVW from Play; allow required permission/onboarding prompts.
+2. Enable USB debugging, attach it, and authorize this Mac. Read `adb devices -l`.
+3. Wait for `/v2/health` to show no active request. Change only `serial` in the
+   private Mac config, then restart the bridge LaunchAgent. Keep the API key,
+   tunnel, and journal intact; no cloud/mobile endpoint change is needed.
+4. Run a cloud login and status read. The cloud supplies the stored credentials;
+   validate the account and vehicle shown on the replacement phone.
+5. Validate a supervised reversible command and restore its prior state. A new
+   myVW version may require a reviewed selector profile before controls work.
+
+For a rollback, disable commands in the Mac config and restart the bridge after
+any active job finishes. Do not reset the journal or replay an uncertain write.
+Reverting `VEHICLE_PROVIDER` restores the old direct implementation, whose VW
+integrity limitation still applies; it is not a working emergency fallback.

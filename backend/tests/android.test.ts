@@ -211,3 +211,22 @@ it("queues an interactive request durably and expires stale work without sending
     error: { code: "REQUEST_EXPIRED" },
   });
 });
+
+it("rejects bridge redirects without forwarding credentials", async () => {
+  const { gateway, values } = setup();
+  const j = await job();
+  await submit(gateway, j);
+  const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+    new Response(null, {
+      status: 302,
+      headers: { Location: "https://untrusted.example" },
+    }),
+  );
+  await gateway.alarm();
+  expect(fetch).toHaveBeenCalledTimes(1);
+  expect(fetch.mock.calls[0]?.[1]?.redirect).toBe("manual");
+  expect(values.get(`result:${j.requestId}`)).toMatchObject({
+    state: "failed",
+    error: { code: "BRIDGE_CONFIGURATION" },
+  });
+});
