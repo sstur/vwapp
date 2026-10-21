@@ -5,8 +5,10 @@ import { toStatus, type PhoneJob } from "../src/vehicle/android";
 import { AndroidGateway } from "../src/vehicle/gateway";
 
 const saveSnapshot = vi.hoisted(() => vi.fn());
+const getActiveClimateSession = vi.hoisted(() => vi.fn());
 vi.mock("../src/store", () => ({
   getDb: vi.fn(),
+  getActiveClimateSession,
   saveSnapshot,
   recordVehicleOperation: vi.fn().mockResolvedValue(undefined),
   startClimateSession: vi.fn(),
@@ -228,5 +230,22 @@ it("rejects bridge redirects without forwarding credentials", async () => {
   expect(values.get(`result:${j.requestId}`)).toMatchObject({
     state: "failed",
     error: { code: "BRIDGE_CONFIGURATION" },
+  });
+});
+
+it("does not run stale climate keepalive work after a newer session starts", async () => {
+  const { gateway, values } = setup();
+  const j = { ...(await job()), climateSessionId: "old-session" };
+  await submit(gateway, j);
+  getActiveClimateSession.mockResolvedValue({
+    id: "new-session",
+    expiresAt: Date.now() + 60000,
+  });
+  const fetch = vi.spyOn(globalThis, "fetch");
+  await gateway.alarm();
+  expect(fetch).not.toHaveBeenCalled();
+  expect(values.get(`result:${j.requestId}`)).toMatchObject({
+    state: "failed",
+    error: { code: "STALE_SESSION" },
   });
 });

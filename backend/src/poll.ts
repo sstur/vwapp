@@ -113,6 +113,7 @@ export async function runClimateKeepalive(db: Db, env: AppEnv): Promise<void> {
           { enabled: !expired, ...(expired ? {} : { tempF: session.tempF }) },
           {
             background: true,
+            climateSessionId: session.id,
             ...(expired
               ? {
                   completion: {

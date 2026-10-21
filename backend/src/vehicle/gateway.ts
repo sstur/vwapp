@@ -4,6 +4,7 @@ import { unseal } from "../crypto";
 import type { AppEnv } from "../env";
 import {
   endClimateSession,
+  getActiveClimateSession,
   getDb,
   recordVehicleOperation,
   saveSnapshot,
@@ -169,6 +170,33 @@ export class AndroidGateway extends DurableObject<AppEnv> {
             retryable: false,
           },
         };
+      }
+      if (
+        !result &&
+        !pending.submissionAttempted &&
+        job.climateSessionId &&
+        job.completion
+      ) {
+        stage = "climate_precondition";
+        const active = await getActiveClimateSession(
+          getDb(this.env),
+          job.completion.vehicleId,
+        );
+        if (
+          active?.id !== job.climateSessionId ||
+          (job.params["enabled"] === true && Date.now() >= active.expiresAt)
+        ) {
+          result = {
+            requestId: job.requestId,
+            state: "failed",
+            error: {
+              code: "STALE_SESSION",
+              message:
+                "The climate session changed or expired before this scheduled action. No command was sent.",
+              retryable: false,
+            },
+          };
+        }
       }
       if (!result) {
         const base = this.env.ANDROID_BRIDGE_URL;

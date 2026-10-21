@@ -36,6 +36,7 @@ export interface PhoneJob {
   sealed: Sealed;
   completion?: Completion;
   background?: boolean;
+  climateSessionId?: string;
 }
 export const jobResultSchema = z.object({
   requestId: z.string(),
@@ -157,6 +158,7 @@ export async function vehicleCall(
     requestId?: string | undefined;
     completion?: Completion;
     background?: boolean;
+    climateSessionId?: string;
   } = {},
 ): Promise<Record<string, unknown>> {
   return phoneCall(
@@ -169,6 +171,9 @@ export async function vehicleCall(
       params,
       sealed: account.sealed,
       completion: options.completion ?? { vehicleId: vehicle.id },
+      ...(options.climateSessionId
+        ? { climateSessionId: options.climateSessionId }
+        : {}),
     },
     { background: options.background ?? false },
   );
