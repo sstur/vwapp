@@ -577,16 +577,29 @@ class MyVW:
         except (ValueError, KeyError):
             raise BridgeError("UNEXPECTED_UI", "Cannot identify the phone's calendar/time zone")
 
-    def scroll_list(self, node):
+    def scroll_list(self, node, down=True):
         x1, y1, x2, y2 = node.bounds
-        self.device.shell("input", "swipe", str((x1 + x2) // 2), str(round(y1 + .85 * (y2 - y1))),
-                          str((x1 + x2) // 2), str(round(y1 + .25 * (y2 - y1))), "500")
+        start, end = (.85, .25) if down else (.25, .85)
+        self.device.shell("input", "swipe", str((x1 + x2) // 2), str(round(y1 + start * (y2 - y1))),
+                          str((x1 + x2) // 2), str(round(y1 + end * (y2 - y1))), "500")
+
+    def list_top(self):
+        previous = None
+        for _ in range(15):
+            container = select(self.snapshot(), PACKAGE, **{"scrollable": "true"})
+            signature = tuple(texts(container))
+            if signature == previous:
+                return
+            previous = signature
+            self.scroll_list(container, down=False)
+        raise BridgeError("UNEXPECTED_UI", "Cannot reach the start of the list")
 
     def activity(self):
         self.prepare()
         reference = self.phone_clock()
         self.open_option("View activity history")
         self.device.wait(PACKAGE, text="Activity History")
+        self.list_top()
         rows, seen, previous, known = [], set(), None, {}
         for _ in range(15):
             nodes = self.snapshot()
@@ -614,6 +627,8 @@ class MyVW:
         self.device.wait(PACKAGE, text="Inbox")
         self.device.tap(PACKAGE, text="Messages")
         self.device.wait(PACKAGE, text="All")
+        self.device.tap(PACKAGE, text="All")
+        self.list_top()
         rows, previous, complete = {}, None, False
         for _ in range(15):
             nodes = self.snapshot()

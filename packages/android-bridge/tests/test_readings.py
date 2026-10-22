@@ -42,6 +42,7 @@ class ReadingsTests(unittest.TestCase):
         self.assertFalse(b["read"])
         self.assertEqual(a["id"], b["id"])
         self.assertEqual(a["body"], "Full message body")
+        self.assertEqual(message_page(node(children=[node(children=[unread])]), self.reference), [b])
 
     def test_maps_intent_requires_current_foreground_and_myvw_origin(self):
         valid = "* Hist #0: Activity\n launchedFromPackage=com.vw.carnet.release\n state=RESUMED\n Intent { act=android.intent.action.VIEW dat=https://www.google.com/maps/dir/?api=1&destination=37.5%2C-122.2&travelmode=walking }"

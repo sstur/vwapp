@@ -70,7 +70,9 @@ def activity_page(container: Node, reference: datetime, known=None):
 
 def message_page(container: Node, reference: datetime):
     result = []
-    for row in container.children:
+    # Uncompressed accessibility keeps non-clickable Compose wrappers around
+    # each row. The inner clickable row owns the unread dot and message text.
+    for row in container.descendants():
         values = texts(row)
         if row.get("clickable") != "true" or len(values) != 3:
             continue
