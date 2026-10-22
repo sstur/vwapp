@@ -267,6 +267,15 @@ cloud transport; duplicate intent replay; and InstantDB updates visible in the
 custom iOS app. A 20-second tunnel outage during an app-initiated refresh produced
 retriable transport errors, then completed the same phone job exactly once.
 
+The restored features also passed the authenticated cloud API: battery limit
+100% → 90% → 100% with a final read confirming restoration; 28 activity entries;
+seven inbox messages with existing local read/deletion overrides preserved;
+parked coordinates/address; retained mileage with its observation time; and all
+four vehicle-update labels. Physical checks validated both front doors, both
+sliding doors, tailgate, hood, and both front windows against the graphic reader.
+Neither rear-window opening appeared in myVW after its reported update advanced.
+The mobile changes shipped in TestFlight 1.0.26 (30).
+
 The Mac service also restarted with its journal retained and with no account email
 or VIN in its host configuration. Vehicle state at the end of command testing was
 charging, climate off at 72°F, and locked on later reads after the unlock test. These are myVW observations, not physical telemetry
