@@ -11,6 +11,24 @@ def node(text, suffix="", enabled="true", package=PACKAGE):
 
 
 class StatusTests(unittest.TestCase):
+    def test_map_keeps_approximate_permission_after_delayed_prompt(self):
+        device = Mock()
+        driver = MyVW(device, "a@example.com", "TESTVIN")
+        driver.home = Mock()
+        driver.tap_id = Mock()
+        driver.wait_id = Mock(return_value=[node("An address", "label_nearest_address"), node("Parked at 1:32PM", "label_lpp_timestamp")])
+        prompt = Node({"package": "com.google.android.permissioncontroller",
+                       "resource-id": "com.android.permissioncontroller:id/permission_deny_and_dont_ask_again_button",
+                       "text": "Keep approximate location"})
+        device.nodes.side_effect = [[], [prompt], [node("", "button_vehicle_location")]]
+        device.shell.return_value = "* Hist #0: Activity\n launchedFromPackage=com.vw.carnet.release\n state=RESUMED\n Intent { act=android.intent.action.VIEW dat=https://www.google.com/maps/dir/?api=1&destination=37.5%2C-122.2 }"
+        with patch("vwbridge.myvw.time.sleep"):
+            result = driver.parked_location()
+        self.assertEqual(result["parkedLat"], 37.5)
+        device.tap.assert_any_call("com.google.android.permissioncontroller", text="Keep approximate location")
+        self.assertEqual(device.tap.call_count, 2)  # Permission choice and vehicle map marker only.
+        device.launch.assert_called_once_with(PACKAGE)
+
     def test_odometer_is_read_only_when_displayed(self):
         top = [node("van", "vehicleNameTextView")]
         idle = parse_status(top, [node("52% | 133 Est. mi"), node("29,907 mi")], "TESTVIN")

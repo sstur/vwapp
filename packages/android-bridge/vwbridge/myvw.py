@@ -636,12 +636,19 @@ class MyVW:
     def parked_location(self):
         self.home()
         self.tap_id("navigation_nav_graph")
-        nodes = self.device.nodes()
-        prompts = [n for n in nodes if n.get("resource-id") == "com.android.permissioncontroller:id/permission_deny_button"
-                   and n.get("text") == "Keep approximate location"]
-        if len(prompts) == 1:
-            self.device.tap(prompts[0].get("package"), text="Keep approximate location")
-        self.wait_id("button_vehicle_location")
+        deadline = time.monotonic() + 30
+        while True:
+            nodes = self.device.nodes()
+            prompts = [n for n in nodes if n.get("package") in {"com.google.android.permissioncontroller", "com.android.permissioncontroller"}
+                       and n.get("resource-id") in {"com.android.permissioncontroller:id/permission_deny_button", "com.android.permissioncontroller:id/permission_deny_and_dont_ask_again_button"}
+                       and n.get("text") == "Keep approximate location"]
+            if len(prompts) == 1:
+                self.device.tap(prompts[0].get("package"), text="Keep approximate location")
+            elif by_id(nodes, "button_vehicle_location"):
+                break
+            elif time.monotonic() >= deadline:
+                raise BridgeError("UNEXPECTED_UI", "Vehicle map did not become available")
+            time.sleep(.5)
         self.tap_id("button_vehicle_location")
         self.device.tap(PACKAGE, **{"content-desc": "Map Marker"})
         nodes = self.wait_id("label_nearest_address")
