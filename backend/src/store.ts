@@ -4,6 +4,7 @@ import type { StatusDTO, VehicleDTO } from "@vwapp/contract";
 import schema from "@vwapp/db";
 import type { Sealed } from "./crypto";
 import type { AppEnv } from "./env";
+import { legacyInboxMatch } from "./inbox";
 import type { InboxMessage, VwTokens } from "./vw/client";
 
 export function getDb(env: AppEnv) {
@@ -686,18 +687,17 @@ export async function syncMessages(
   });
   const existing = (res.vwAccounts[0]?.messages ?? []) as MessageRecord[];
   const byMessageId = new Map(existing.map((m) => [m.messageId, m]));
+  const claimed = new Set<string>();
   const now = Date.now();
 
   const ops = vw.map((m) => {
     const prev =
       byMessageId.get(m.id) ??
-      (m.id.startsWith("android:")
-        ? existing.find(
-            (row) =>
-              row.title.trim() === m.title.trim() &&
-              (row.body ?? "").trim() === (m.body ?? "").trim(),
-          )
-        : undefined);
+      legacyInboxMatch(
+        existing.filter((row) => !claimed.has(row.id)),
+        m,
+      );
+    if (prev) claimed.add(prev.id);
     const rowId = prev?.id ?? id();
     const fields = {
       messageId: m.id,
