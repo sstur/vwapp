@@ -3,6 +3,15 @@
 Decisions and designs agreed in discussion but not yet built. Keep this current:
 remove items when done, add design notes when plans firm up.
 
+## Android bridge follow-up: live charging power
+
+Revisit live charging kW when the owner next uses a fast charger. The owner
+remembers seeing power in myVW; our initial inspection was around or below 1 kW,
+so rounding or conditional visibility may explain why it was absent. Treat this
+as pending validation, not an established Android-app limitation. Inspect the
+charging UI at higher power, then add deterministic parsing and restore the field
+if exposed. Leave the current implementation unchanged until that test.
+
 ## 1. Auth/session hardening
 
 (Compare-first login, the one-shared-session model, and logout-as-detach are

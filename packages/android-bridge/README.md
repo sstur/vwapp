@@ -107,6 +107,9 @@ photo means no openings are highlighted. Neither that photo nor an unhighlighted
 door proves an individual sensor reports closed; Android clients label these
 items “Not shown open”. Individual door-lock values, instantaneous charging kW,
 and connector-lock state remain unknown when absent from the UI.
+Charging kW needs another inspection at a fast charger: the owner has seen it in
+myVW, and the initial low-power session may have hidden or rounded the reading.
+See TODO.md; this is pending validation rather than a confirmed app limitation.
 Live checks validated all four doors, hood, tailgate and both front windows.
 Neither rear sliding-window pane produced a highlight during the ID. Buzz tests,
 even after the app updated. Do not infer that either rear pane is closed.
