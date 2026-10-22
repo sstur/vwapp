@@ -9,7 +9,7 @@ from vwbridge.device import BridgeError
 class ClosureTests(unittest.TestCase):
     def test_physical_door_captures(self):
         fixtures = Path(__file__).parent / "fixtures/closures"
-        expected = {"passenger": "front right", "driver": "front left", "rear-left": "rear left", "rear-right": "rear right", "tailgate": "trunk"}
+        expected = {"passenger": "front right", "driver": "front left", "rear-left": "rear left", "rear-right": "rear right", "tailgate": "trunk", "hood": "hood"}
         for name, door in expected.items():
             with self.subTest(name=name):
                 result = classify((fixtures / (name + ".png")).read_bytes(), (0, 0, 128, 144))

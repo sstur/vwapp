@@ -107,6 +107,9 @@ photo means no openings are highlighted. Neither that photo nor an unhighlighted
 door proves an individual sensor reports closed; Android clients label these
 items “Not shown open”. Individual door-lock values, instantaneous charging kW,
 and connector-lock state remain unknown when absent from the UI.
+Live checks validated all four doors, hood, tailgate and both front windows.
+Neither rear sliding-window pane produced a highlight during the ID. Buzz tests,
+even after the app updated. Do not infer that either rear pane is closed.
 
 Activity and the Messages inbox tab are read with bounded scrolling (50 items,
 15 pages). Inbox reading does not open messages or change their read flags.
