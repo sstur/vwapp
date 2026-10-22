@@ -7,6 +7,7 @@ import {
   getActiveClimateSession,
   getDb,
   recordVehicleOperation,
+  saveConfirmedChargeLimit,
   saveSnapshot,
   startClimateSession,
 } from "../store";
@@ -288,6 +289,19 @@ export class AndroidGateway extends DurableObject<AppEnv> {
             toStatus(result.result),
             { snapshotId: job.requestId },
           );
+        if (job.operation === "chargeLimit") {
+          const target = result.result?.["targetSoc"];
+          if (typeof target !== "number" || target !== job.params["targetSoc"])
+            throw new Error(
+              "Phone did not confirm the requested charging target",
+            );
+          await saveConfirmedChargeLimit(
+            db,
+            job.completion.vehicleId,
+            target,
+            job.requestId,
+          );
+        }
         const climate = job.completion.climate;
         if (climate?.kind === "start")
           await startClimateSession(db, job.completion.vehicleId, {

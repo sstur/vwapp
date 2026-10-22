@@ -5,11 +5,13 @@ import { toStatus, type PhoneJob } from "../src/vehicle/android";
 import { AndroidGateway } from "../src/vehicle/gateway";
 
 const saveSnapshot = vi.hoisted(() => vi.fn());
+const saveConfirmedChargeLimit = vi.hoisted(() => vi.fn());
 const getActiveClimateSession = vi.hoisted(() => vi.fn());
 vi.mock("../src/store", () => ({
   getDb: vi.fn(),
   getActiveClimateSession,
   saveSnapshot,
+  saveConfirmedChargeLimit,
   recordVehicleOperation: vi.fn().mockResolvedValue(undefined),
   startClimateSession: vi.fn(),
   endClimateSession: vi.fn(),
@@ -114,6 +116,31 @@ describe("phone status normalization", () => {
   });
 });
 describe("durable phone coordinator", () => {
+  it("publishes a confirmed charge limit before returning success to the picker", async () => {
+    const { gateway } = setup();
+    const j = {
+      ...(await job()),
+      operation: "chargeLimit" as const,
+      params: { targetSoc: 90 },
+    };
+    await submit(gateway, j);
+    expect(saveConfirmedChargeLimit).not.toHaveBeenCalled();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      Response.json({
+        requestId: j.requestId,
+        state: "succeeded",
+        result: { targetSoc: 90 },
+      }),
+    );
+    await gateway.alarm();
+    expect(saveConfirmedChargeLimit).toHaveBeenCalledWith(
+      undefined,
+      "vehicle-a",
+      90,
+      j.requestId,
+    );
+    expect(saveSnapshot).not.toHaveBeenCalled();
+  });
   it("serializes admission, reuses IDs, and rejects cross-account reuse", async () => {
     const { gateway, values } = setup();
     const j = await job();

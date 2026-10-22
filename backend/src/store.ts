@@ -481,6 +481,31 @@ export async function getLatestSnapshot(db: Db, vehicleId: string) {
   return res.snapshots[0];
 }
 
+/** Publish a verified setting immediately, retaining every other reading's age.
+ * The next full UI read may take two minutes. Never leave the picker showing
+ * its old value after the command has already been confirmed by myVW.
+ */
+export async function saveConfirmedChargeLimit(
+  db: Db,
+  vehicleId: string,
+  targetSoc: number,
+  requestId: string,
+): Promise<void> {
+  const latest = await getLatestSnapshot(db, vehicleId);
+  if (latest?.source !== "android") return;
+  const { id: previousSnapshotId, ...fields } = latest;
+  if (previousSnapshotId === requestId) return;
+  await db.transact(
+    tx(db.tx.snapshots[requestId])
+      .update({
+        ...fields,
+        targetSoc,
+        createdAt: Date.now(),
+      })
+      .link({ vehicle: vehicleId }),
+  );
+}
+
 /** parkedAt of the vehicle's latest snapshot — when the car last parked. */
 export async function latestParkedAt(
   db: Db,
