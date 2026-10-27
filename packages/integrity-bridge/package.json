@@ -3,13 +3,27 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
-    "build": ".venv/bin/frida-compile agent.js -o dist/agent.js",
-    "test": "python3 -m unittest discover -s tests",
-    "format": "prettier --write agent.js package.json config.example.json",
-    "format:check": "prettier --check agent.js package.json config.example.json"
+    "build": "pnpm typecheck && tsc -p tsconfig.build.json && esbuild agent/index.ts --bundle --format=iife --platform=neutral --main-fields=main --target=es2022 --outfile=dist/integrity-agent.js",
+    "start": "node dist/main.js",
+    "install-service": "node scripts/install-service.ts",
+    "test": "node --test tests/*.test.ts",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p agent/tsconfig.json",
+    "lint": "eslint src agent scripts tests",
+    "format": "prettier --write src agent scripts tests *.json README.md",
+    "format:check": "prettier --check src agent scripts tests *.json README.md"
   },
   "devDependencies": {
+    "@types/frida-gum": "19.12.0",
+    "@types/node": "^24.19.2",
+    "esbuild": "0.28.1",
     "frida-java-bridge": "7.0.13"
+  },
+  "dependencies": {
+    "frida": "17.22.2",
+    "zod": "4.4.3"
   }
 }

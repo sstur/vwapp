@@ -191,12 +191,19 @@ verifier for login and refresh token for refresh. The PKCE challenge itself
 remains unpadded. The refresh grant also replays the original `code_verifier`.
 The old literal `"unavailable"` no longer works.
 
-`packages/integrity-bridge` uses the connected Moto's installed myVW process
+`packages/integrity-bridge` is strict TypeScript on Node.js with the official
+Frida Node bindings and a TypeScript agent bundled by esbuild. It uses the
+connected Moto's installed myVW process
 through Frida/JNI, without UI automation. It can start the process and unfreeze
 it while the screen stays off. Phone setup, version pins and launchd deployment
 are documented in that package. Ordinary VW reads/commands go directly from the
 Worker to VW; the bridge is needed only for login/session renewal. Bridge
 failure never triggers a password-login attempt.
+
+Keep the bridge in the TypeScript stack. Its Node and Frida targets both inherit
+the strictest compiler settings and typed lint rules; validate untrusted config,
+HTTP and native RPC data at runtime. Do not add Python or another implementation
+language without discussing the need with the owner.
 
 A private `AuthSession` Durable Object per account serializes refreshes and all
 S-PIN challenges across cron/client isolates. It re-reads persisted tokens after

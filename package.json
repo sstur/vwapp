@@ -27,6 +27,7 @@
   "pnpm": {
     "onlyBuiltDependencies": [
       "esbuild",
+      "frida",
       "workerd",
       "unrs-resolver"
     ],

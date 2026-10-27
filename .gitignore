@@ -15,8 +15,3 @@ dist/
 # generated types
 **/expo-env.d.ts
 **/worker-configuration.d.ts
-
-# Python bridge environments
-.venv/
-__pycache__/
-*.pyc
