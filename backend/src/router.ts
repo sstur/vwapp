@@ -3,6 +3,7 @@ import { contract, type VehicleDTO } from "@vwapp/contract";
 import { runAssistant, type VehicleCaller } from "./assistant";
 import { seal, sha256Hex, timingSafeEqual, unseal } from "./crypto";
 import type { AppEnv } from "./env";
+import { integrityProvider, IntegrityUnavailableError } from "./integrity";
 import { isMapsConfigured, signSnapshotUrl } from "./maps";
 import { readStatus } from "./status";
 import {
@@ -49,8 +50,6 @@ import {
   vwGetVehicles,
   vwLockUnlock,
   vwLogin,
-  vwMintSpinSession,
-  vwRefresh,
   vwSetChargeLimit,
   vwSetClimateTemp,
   type InboxMessage,
@@ -82,7 +81,25 @@ export interface RouterContext {
   waitUntil: (promise: Promise<unknown>) => void;
 }
 
-const os = implement(contract).$context<RouterContext>();
+const os = implement(contract)
+  .$context<RouterContext>()
+  .use(async ({ context, next }) => {
+    try {
+      const work = Promise.resolve(next());
+      context.waitUntil(
+        work.then(
+          () => undefined,
+          () => undefined,
+        ),
+      );
+      return await work;
+    } catch (error) {
+      if (error instanceof IntegrityUnavailableError) {
+        throw new ORPCError("SERVICE_UNAVAILABLE", { message: error.message });
+      }
+      throw error;
+    }
+  });
 
 function requireUser(context: RouterContext): string {
   if (context.userId === null)
@@ -134,25 +151,25 @@ async function storedPasswordMatches(
  * authoritative judge of the submitted credentials.)
  */
 async function verifySavedSession(
+  context: RouterContext,
   account: StoredAccount,
 ): Promise<{ tokens: VwTokens; vehicles: VehicleDTO[] } | null> {
   const { tokens } = account;
   if (tokens.expiresAt > Date.now() + 60_000) {
     try {
       return { tokens, vehicles: await vwGetVehicles(tokens.accessToken) };
-    } catch {
+    } catch (err) {
+      if (!(err instanceof VwAuthError)) throw err;
       // fall through to a refresh attempt
     }
   }
   // Refresh now also requires the original login code_verifier; without one
   // (older stored session) a refresh can't succeed — force a full login.
   if (tokens.refreshToken === null || tokens.codeVerifier === null) return null;
-  try {
-    const fresh = await vwRefresh(tokens.refreshToken, tokens.codeVerifier);
-    return { tokens: fresh, vehicles: await vwGetVehicles(fresh.accessToken) };
-  } catch {
-    return null;
-  }
+  // The coordinator already owns refresh -> password fallback and its breaker.
+  // Propagate a failure instead of trying the same password a second time here.
+  const fresh = await reauth(context.db, context.env, account, true);
+  return { tokens: fresh, vehicles: await vwGetVehicles(fresh.accessToken) };
 }
 
 /**
@@ -178,7 +195,7 @@ async function establishSession(
     existing !== null &&
     (await storedPasswordMatches(context.env, existing, password))
   ) {
-    session = await verifySavedSession(existing);
+    session = await verifySavedSession(context, existing);
     console.log(
       `[auth] account=${existing.id}: digest match, saved session ${
         session !== null
@@ -214,10 +231,15 @@ async function establishSession(
     }
     let tokens;
     try {
-      tokens = await vwLogin(username, password);
+      tokens = await vwLogin(
+        username,
+        password,
+        integrityProvider(context.env),
+      );
       console.log(`[auth] VW password login ok`);
       if (existing !== null) await clearLoginFailures(context.db, existing);
     } catch (err) {
+      if (err instanceof IntegrityUnavailableError) throw err;
       if (existing !== null) {
         await recordLoginFailure(
           context.db,
@@ -361,7 +383,6 @@ async function tryWakeVehicle(
   db: Db,
   env: AppEnv,
   account: StoredAccount,
-  tokens: VwTokens,
   uuid: string,
 ): Promise<void> {
   try {
@@ -370,11 +391,18 @@ async function tryWakeVehicle(
     ) as { spin?: string };
     if (creds.spin === undefined || creds.spin === "") return; // no S-PIN → can't wake
     try {
-      await vwForceRefresh(tokens, uuid, creds.spin);
+      await vwForceRefresh(
+        await ensureCarnetToken(db, env, account, uuid, creds.spin),
+        uuid,
+      );
     } catch (err) {
       if (!(err instanceof VwAuthError)) throw err;
-      const fresh = await reauth(db, env, account, true);
-      await vwForceRefresh(fresh, uuid, creds.spin);
+      await vwForceRefresh(
+        await ensureCarnetToken(db, env, account, uuid, creds.spin, {
+          force: true,
+        }),
+        uuid,
+      );
     }
   } catch (err) {
     console.error(
@@ -396,18 +424,10 @@ const refresh = os.vehicle.refresh.handler(async ({ input, context }) => {
   const spin = await requireSpin(context.env, account);
 
   return loggedOp(`refresh vehicle=${vehicle.id}`, async () => {
-    const tokens = await ensureTokens(context.db, context.env, account);
-
     // Actually poke the car first; its fresh telemetry arrives async via the
     // cron + live query. Then read VW's current cloud status for an immediate
     // snapshot + return value (likely still pre-wake — that's fine).
-    await tryWakeVehicle(
-      context.db,
-      context.env,
-      account,
-      tokens,
-      vehicle.uuid,
-    );
+    await tryWakeVehicle(context.db, context.env, account, vehicle.uuid);
 
     const result = await readStatus(
       context.db,
@@ -449,25 +469,25 @@ const command = os.vehicle.command.handler(async ({ input, context }) => {
     async () => {
       // One retry path: a stale access token surfaces as VwAuthError, so force a
       // re-login and try once more. VwCommandError (bad PIN, refusal) is terminal.
-      let tokens = await ensureTokens(db, env, account);
+
       let correlationId: string;
       try {
         correlationId = await vwLockUnlock(
-          tokens,
+          await ensureCarnetToken(db, env, account, vehicle.uuid, spin),
           vehicle.uuid,
-          spin,
           input.action,
         );
       } catch (err) {
         if (err instanceof VwCommandError)
           throw new ORPCError("BAD_REQUEST", { message: err.message });
         if (!(err instanceof VwAuthError)) throw err;
-        tokens = await reauth(db, env, account, true);
+        await reauth(db, env, account, true);
         try {
           correlationId = await vwLockUnlock(
-            tokens,
+            await ensureCarnetToken(db, env, account, vehicle.uuid, spin, {
+              force: true,
+            }),
             vehicle.uuid,
-            spin,
             input.action,
           );
         } catch (retryErr) {
@@ -483,18 +503,25 @@ const command = os.vehicle.command.handler(async ({ input, context }) => {
       // VW's `result: 0` only means "accepted" — the car may still reject it (e.g.
       // ignition on, door open). Poll the operation history until it confirms, the
       // way the myVW app does; an explicit failure throws here and surfaces to the
-      // app. (Resolves false on timeout — rare; we then fall back to optimistic.)
+      // app. Never display a requested lock state as confirmed on timeout.
       try {
-        await vwAwaitCommandResult(
+        const result = await vwAwaitCommandResult(
           await ensureCarnetToken(db, env, account, vehicle.uuid, spin),
           vehicle.uuid,
           correlationId,
         );
+        if (!result.confirmed)
+          throw new VwCommandError(
+            "VW accepted the command but has not confirmed completion. Check the vehicle status before retrying.",
+          );
       } catch (err) {
         if (err instanceof VwCommandError)
           throw new ORPCError("BAD_REQUEST", { message: err.message });
         if (!(err instanceof VwAuthError)) throw err;
-        // token died mid-poll; the command was already accepted — fall through.
+        throw new ORPCError("SERVICE_UNAVAILABLE", {
+          message:
+            "The command was sent, but its completion could not be verified. Refresh the vehicle status.",
+        });
       }
 
       // Snapshot the confirmed state. RVS still lags the physical action, so trust
@@ -686,18 +713,13 @@ const climateStart = os.vehicle.climateStart.handler(
     return loggedOp(
       `climate start vehicle=${vehicle.id} tempF=${String(input.tempF)} durationMin=${String(input.durationMin)}`,
       async () => {
-        let tokens = await ensureTokens(db, env, account);
+        const tokens = await ensureTokens(db, env, account);
         // Mint a fresh S-PIN session per EV op (a token doesn't survive several
         // writes), with one reauth retry if the access token has expired.
-        const mint = async (): Promise<string> => {
-          try {
-            return await vwMintSpinSession(tokens, vehicle.uuid, spin);
-          } catch (err) {
-            if (!(err instanceof VwAuthError)) throw err;
-            tokens = await reauth(db, env, account, true);
-            return vwMintSpinSession(tokens, vehicle.uuid, spin);
-          }
-        };
+        const mint = () =>
+          ensureCarnetToken(db, env, account, vehicle.uuid, spin, {
+            force: true,
+          });
 
         try {
           const state = await vwGetClimate(await mint(), tokens, vehicle.uuid);
@@ -786,16 +808,10 @@ const climateStop = os.vehicle.climateStop.handler(
     const spin = await requireSpin(env, account);
 
     return loggedOp(`climate stop vehicle=${vehicle.id}`, async () => {
-      let tokens = await ensureTokens(db, env, account);
-      const mint = async (): Promise<string> => {
-        try {
-          return await vwMintSpinSession(tokens, vehicle.uuid, spin);
-        } catch (err) {
-          if (!(err instanceof VwAuthError)) throw err;
-          tokens = await reauth(db, env, account, true);
-          return vwMintSpinSession(tokens, vehicle.uuid, spin);
-        }
-      };
+      const mint = () =>
+        ensureCarnetToken(db, env, account, vehicle.uuid, spin, {
+          force: true,
+        });
       try {
         const correlationId = await retryOnBusy("climate stop", async () =>
           vwClimateStop(await mint(), vehicle.uuid),
@@ -866,16 +882,8 @@ const chargeStart = os.vehicle.chargeStart.handler(
     const vehicle = pickVehicle(user, input.uuid);
     const spin = await requireSpin(env, account);
 
-    let tokens = await ensureTokens(db, env, account);
-    const mint = async (): Promise<string> => {
-      try {
-        return await vwMintSpinSession(tokens, vehicle.uuid, spin);
-      } catch (err) {
-        if (!(err instanceof VwAuthError)) throw err;
-        tokens = await reauth(db, env, account, true);
-        return vwMintSpinSession(tokens, vehicle.uuid, spin);
-      }
-    };
+    const mint = () =>
+      ensureCarnetToken(db, env, account, vehicle.uuid, spin, { force: true });
     try {
       const correlationId = await retryOnBusy("charge start", async () =>
         vwChargeStart(await mint(), vehicle.uuid),
@@ -903,16 +911,8 @@ const chargeStop = os.vehicle.chargeStop.handler(async ({ input, context }) => {
   const vehicle = pickVehicle(user, input.uuid);
   const spin = await requireSpin(env, account);
 
-  let tokens = await ensureTokens(db, env, account);
-  const mint = async (): Promise<string> => {
-    try {
-      return await vwMintSpinSession(tokens, vehicle.uuid, spin);
-    } catch (err) {
-      if (!(err instanceof VwAuthError)) throw err;
-      tokens = await reauth(db, env, account, true);
-      return vwMintSpinSession(tokens, vehicle.uuid, spin);
-    }
-  };
+  const mint = () =>
+    ensureCarnetToken(db, env, account, vehicle.uuid, spin, { force: true });
   try {
     const correlationId = await retryOnBusy("charge stop", async () =>
       vwChargeStop(await mint(), vehicle.uuid),
@@ -940,16 +940,8 @@ const setChargeLimit = os.vehicle.setChargeLimit.handler(
     const vehicle = pickVehicle(user, input.uuid);
     const spin = await requireSpin(env, account);
 
-    let tokens = await ensureTokens(db, env, account);
-    const mint = async (): Promise<string> => {
-      try {
-        return await vwMintSpinSession(tokens, vehicle.uuid, spin);
-      } catch (err) {
-        if (!(err instanceof VwAuthError)) throw err;
-        tokens = await reauth(db, env, account, true);
-        return vwMintSpinSession(tokens, vehicle.uuid, spin);
-      }
-    };
+    const mint = () =>
+      ensureCarnetToken(db, env, account, vehicle.uuid, spin, { force: true });
     try {
       const correlationId = await retryOnBusy("set charge limit", async () =>
         vwSetChargeLimit(await mint(), vehicle.uuid, input.targetSoc),
@@ -978,16 +970,8 @@ const activity = os.vehicle.activity.handler(async ({ input, context }) => {
   const spin = await requireSpin(env, account);
 
   // Tier-2 read: needs the S-PIN carnet bearer (the access token 403s).
-  let tokens = await ensureTokens(db, env, account);
-  const mint = async (): Promise<string> => {
-    try {
-      return await vwMintSpinSession(tokens, vehicle.uuid, spin);
-    } catch (err) {
-      if (!(err instanceof VwAuthError)) throw err;
-      tokens = await reauth(db, env, account, true);
-      return vwMintSpinSession(tokens, vehicle.uuid, spin);
-    }
-  };
+
+  const mint = () => ensureCarnetToken(db, env, account, vehicle.uuid, spin);
   try {
     return { events: await vwGetActivity(await mint(), vehicle.uuid, 50) };
   } catch (err) {
@@ -1005,16 +989,8 @@ const messages = os.vehicle.messages.handler(async ({ input, context }) => {
   const vehicle = pickVehicle(user, input.uuid);
   const spin = await requireSpin(env, account);
 
-  let tokens = await ensureTokens(db, env, account);
-  const mint = async (): Promise<string> => {
-    try {
-      return await vwMintSpinSession(tokens, vehicle.uuid, spin);
-    } catch (err) {
-      if (!(err instanceof VwAuthError)) throw err;
-      tokens = await reauth(db, env, account, true);
-      return vwMintSpinSession(tokens, vehicle.uuid, spin);
-    }
-  };
+  const tokens = await ensureTokens(db, env, account);
+  const mint = () => ensureCarnetToken(db, env, account, vehicle.uuid, spin);
   try {
     return {
       messages: await vwGetMessages(await mint(), tokens, vehicle.uuid, 50),
@@ -1041,16 +1017,8 @@ const refreshMessages = os.vehicle.refreshMessages.handler(
     const vehicle = pickVehicle(user, input.uuid);
     const spin = await requireSpin(env, account);
 
-    let tokens = await ensureTokens(db, env, account);
-    const mint = async (): Promise<string> => {
-      try {
-        return await vwMintSpinSession(tokens, vehicle.uuid, spin);
-      } catch (err) {
-        if (!(err instanceof VwAuthError)) throw err;
-        tokens = await reauth(db, env, account, true);
-        return vwMintSpinSession(tokens, vehicle.uuid, spin);
-      }
-    };
+    const tokens = await ensureTokens(db, env, account);
+    const mint = () => ensureCarnetToken(db, env, account, vehicle.uuid, spin);
     let list: InboxMessage[];
     try {
       list = await vwGetMessages(

@@ -6,6 +6,8 @@ import { pollAllVehicles, runClimateKeepalive } from "./poll";
 import { router } from "./router";
 import { getDb } from "./store";
 
+export { AuthSession } from "./auth-session";
+
 const handler = new RPCHandler(router, {
   plugins: [new CORSPlugin()],
   interceptors: [
@@ -58,3 +60,5 @@ export default {
     ctx.waitUntil(runClimateKeepalive(db, env));
   },
 };
+
+export { AndroidGateway } from "./legacy-gateway";

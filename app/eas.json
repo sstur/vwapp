@@ -7,6 +7,14 @@
       "channel": "main",
       "autoIncrement": true,
       "environment": "production"
+    },
+    "simulator": {
+      "extends": "production",
+      "distribution": "internal",
+      "autoIncrement": false,
+      "ios": {
+        "simulator": true
+      }
     }
   },
   "submit": {

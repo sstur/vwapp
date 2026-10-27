@@ -8,6 +8,7 @@
  *   -> identifier-first HTML scrape -> kombi:///login?code=… -> token exchange.
  */
 import type { StatusDTO, VehicleDTO } from "@vwapp/contract";
+import type { IntegrityProvider } from "../integrity";
 
 const API = "https://b-h-s.spr.us00.p.con-veh.net";
 const IDP = "https://identity.na.vwgroup.io";
@@ -16,16 +17,6 @@ const IDP_CLIENT = "b680e751-7e1f-4008-8ec1-3a528183d215@apps_vw-dilab_com";
 const REDIRECT_URI = "kombi:///login";
 const SCOPE = "openid";
 const APP_UA = "MyVW/1.0 Android";
-// VW's token endpoint (/oidc/v1/token -> CarnetSPAuthorizationServer /azs) began
-// REQUIRING a `play_integrity_token` field on both the authorization_code and
-// refresh_token grants (2026-07-30) — without it the exchange 401s with
-// INVALID_REQUEST, which broke every third-party client while the stock app
-// (which mints a real Google Play Integrity token) kept working. VW currently
-// only checks the field is PRESENT, not that it's a valid attestation, so any
-// non-empty value works. This is a STOPGAP: if VW starts validating the token
-// for real, this stops working and there is no server-side remedy (Play
-// Integrity tokens can't be minted off a genuine device+app). See CLAUDE.md.
-const PLAY_INTEGRITY_TOKEN = "unavailable";
 const BROWSER_UA =
   "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) " +
   "Version/4.0 Chrome/74.0.3729.185 Mobile Safari/537.36";
@@ -47,6 +38,8 @@ export interface VwTokens {
 }
 
 export class VwAuthError extends Error {}
+/** Transport/server failures are not evidence that credentials are invalid. */
+export class VwUnavailableError extends Error {}
 /** A remote command was reachable but rejected (bad S-PIN, lockout, refusal). */
 export class VwCommandError extends Error {}
 /** VW is still processing a previous EV op (EV_THRESHOLD_EXCEEDED) — retry later. */
@@ -394,10 +387,13 @@ function tokensFrom(t: TokenResponse, codeVerifier: string | null): VwTokens {
 export async function vwLogin(
   username: string,
   password: string,
+  integrity: IntegrityProvider,
 ): Promise<VwTokens> {
   const jar = new CookieJar();
   const codeVerifier = randomHex(64).toUpperCase();
   const codeChallenge = await sha256Base64Url(codeVerifier);
+  // Fail before submitting credentials if the phone/bridge is unavailable.
+  const integrityToken = await integrity(codeVerifier);
 
   const authUrl =
     `${API}/oidc/v1/authorize?` +
@@ -482,7 +478,7 @@ export async function vwLogin(
       "user-agent": APP_UA,
     },
     body: new URLSearchParams({
-      play_integrity_token: PLAY_INTEGRITY_TOKEN,
+      play_integrity_token: integrityToken,
       grant_type: "authorization_code",
       code,
       client_id: DEVICE_CLIENT,
@@ -507,7 +503,9 @@ export async function vwLogin(
 export async function vwRefresh(
   refreshToken: string,
   codeVerifier: string | null,
+  integrity: IntegrityProvider,
 ): Promise<VwTokens> {
+  const integrityToken = await integrity(refreshToken);
   const res = await fetch(`${API}/oidc/v1/token`, {
     method: "POST",
     headers: {
@@ -516,13 +514,17 @@ export async function vwRefresh(
       "user-agent": APP_UA,
     },
     body: new URLSearchParams({
-      play_integrity_token: PLAY_INTEGRITY_TOKEN,
+      play_integrity_token: integrityToken,
       grant_type: "refresh_token",
       client_id: DEVICE_CLIENT,
       refresh_token: refreshToken,
       ...(codeVerifier !== null ? { code_verifier: codeVerifier } : {}),
     }).toString(),
   });
+  if (res.status === 429 || res.status >= 500)
+    throw new VwUnavailableError(
+      `VW token service unavailable (${String(res.status)})`,
+    );
   if (!res.ok)
     throw new VwAuthError(`token refresh failed: ${String(res.status)}`);
   const body: unknown = await res.json();
@@ -744,21 +746,10 @@ async function vwSpinSession(
  * should reauth + retry) or VwCommandError on a command-level rejection.
  */
 export async function vwLockUnlock(
-  tokens: { accessToken: string; idToken: string | null },
+  carnetToken: string,
   uuid: string,
-  spin: string,
   action: "lock" | "unlock",
 ): Promise<string> {
-  if (tokens.idToken === null) throw new VwAuthError("missing id_token");
-  const userId = userIdFromIdToken(tokens.idToken);
-  const carnetToken = await vwSpinSession(
-    tokens.accessToken,
-    tokens.idToken,
-    userId,
-    uuid,
-    spin,
-  );
-
   // Verified against the myVW APK (jadx → defpackage/mbg.java, commands/models/
   // LockAndUnlock.java): the S-PIN carnetVehicleToken IS the Authorization
   // bearer (not the access token, and there is no X-* spin header), and the
@@ -925,20 +916,9 @@ function sleep(ms: number): Promise<void> {
  * VwCommandError on a command-level rejection (incl. throttling).
  */
 export async function vwForceRefresh(
-  tokens: { accessToken: string; idToken: string | null },
+  carnetToken: string,
   uuid: string,
-  spin: string,
 ): Promise<void> {
-  if (tokens.idToken === null) throw new VwAuthError("missing id_token");
-  const userId = userIdFromIdToken(tokens.idToken);
-  const carnetToken = await vwSpinSession(
-    tokens.accessToken,
-    tokens.idToken,
-    userId,
-    uuid,
-    spin,
-  );
-
   const res = await fetch(`${API}/rvs/v1/vehicle/${uuid}/refresh`, {
     method: "POST",
     headers: {

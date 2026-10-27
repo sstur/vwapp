@@ -16,7 +16,7 @@ import {
   updateClimateSession,
   type Db,
 } from "./store";
-import { ensureTokens } from "./tokens";
+import { ensureCarnetToken, ensureTokens } from "./tokens";
 import {
   vwAwaitCommandResult,
   VwBusyError,
@@ -24,7 +24,6 @@ import {
   vwClimateStop,
   VwCommandError,
   vwGetClimate,
-  vwMintSpinSession,
 } from "./vw/client";
 
 const SNAPSHOT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
@@ -125,7 +124,14 @@ export async function runClimateKeepalive(db: Db, env: AppEnv): Promise<void> {
         );
       }
 
-      const carnet = await vwMintSpinSession(tokens, vehicle.uuid, creds.spin);
+      const carnet = await ensureCarnetToken(
+        db,
+        env,
+        account,
+        vehicle.uuid,
+        creds.spin,
+        { force: true },
+      );
 
       if (Date.now() >= session.expiresAt) {
         slog(

@@ -26,16 +26,21 @@ fully controls.
 
 pnpm monorepo:
 
-- `app/` — Expo (SDK 56) + expo-router + Tamagui mobile app, runs in Expo Go
+- `app/` — Expo (SDK 57) + expo-router + Tamagui mobile app, released through TestFlight
 - `backend/` — Cloudflare Worker (oRPC) that owns the VW session and is the only
   writer to the database
+- `packages/integrity-bridge` — Mac service using the USB Android phone for
+  fresh Google Play Integrity attestations, without UI automation
 - `packages/contract` — shared oRPC contract
 - `packages/db` — shared InstantDB schema
 - `packages/poc` — throwaway reference implementation of the VW protocol
 
 The Worker holds a single VW session per account and polls VW on a cron; the app
 reads vehicle data via InstantDB live queries for real-time updates and uses RPC
-only for actions (login/logout/refresh/commands).
+only for actions (login/logout/refresh/commands). A per-account Durable Object
+serializes OAuth renewal and S-PIN challenges. The phone only supplies integrity
+tokens during login/renewal; all vehicle API traffic stays in the Worker. The
+Mac receives request hashes, never VW passwords, PINs, or refresh tokens.
 
 ## Development
 
@@ -53,7 +58,10 @@ deployment, and project conventions, and [TODO.md](./TODO.md) for planned work.
 Nothing owner-specific is committed — every account/identity value comes from
 environment files you create from the provided `*.example` templates. You need a
 North America (myVW / legacy Car-Net) VW account; the EU CARIAD stack is not
-supported. Apple Maps (the parked-location map) is **optional** — skip it and the
+supported. Authentication now also requires an always-on Mac and USB-connected
+Android phone with a verified official myVW installation. Configure the
+[integrity bridge](./packages/integrity-bridge/README.md) and the Worker's
+`INTEGRITY_BRIDGE_URL` / `INTEGRITY_BRIDGE_KEY` before deploying. Apple Maps (the parked-location map) is **optional** — skip it and the
 app simply shows coordinates instead.
 
 1. **InstantDB** — create an app at [instantdb.com](https://instantdb.com) and
@@ -79,12 +87,12 @@ app simply shows coordinates instead.
 4. **Mobile app** — copy `app/.env.example` → `app/.env` and set
    `EXPO_PUBLIC_INSTANT_APP_ID`, `EXPO_PUBLIC_API_URL` (your deployed Worker URL,
    ending in `/rpc`), plus `EXPO_OWNER` / `EAS_PROJECT_ID` /
-   `IOS_BUNDLE_IDENTIFIER` for publishing. Initialise EAS and publish an update
-   for Expo Go:
+   `IOS_BUNDLE_IDENTIFIER` and `ASC_APP_ID` for publishing. Initialise EAS and
+   publish a native TestFlight build:
    ```bash
    cd app
    npx eas-cli init                     # creates the EAS project (sets EAS_PROJECT_ID)
-   npx eas-cli update --branch main --message "initial" --environment production
+   pnpm run publish:ios                  # native build + TestFlight submission
    ```
    For local development you can skip `EXPO_PUBLIC_API_URL`: with the Metro and
    Worker dev servers running, the app auto-targets the Worker on the same host.

@@ -2,8 +2,8 @@
   "//": "Node-targeted config for backend scripts (.ts), run via Node directly. Standalone (not the Worker tsconfig, which uses types:[] and Worker libs); mirrors app/scripts.",
   "compilerOptions": {
     "target": "esnext",
-    "module": "nodenext",
-    "moduleResolution": "nodenext",
+    "module": "esnext",
+    "moduleResolution": "bundler",
     "lib": ["esnext"],
     "types": ["node"],
     "strict": true,
@@ -14,5 +14,5 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["**/*.ts"]
+  "include": ["**/*.ts", "../worker-configuration.d.ts"]
 }

@@ -156,6 +156,17 @@ export async function getAccountByUserKey(
   return account === undefined ? null : toStoredAccount(account);
 }
 
+export async function getAccountById(
+  db: Db,
+  accountId: string,
+): Promise<StoredAccount | null> {
+  const res = await db.query({
+    vwAccounts: { $: { where: { id: accountId } } },
+  });
+  const record = res.vwAccounts[0];
+  return record === undefined ? null : toStoredAccount(record);
+}
+
 /** Every stored VW session with its garage — the cron's work list. */
 export async function listAccounts(
   db: Db,

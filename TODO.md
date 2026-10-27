@@ -8,13 +8,9 @@ remove items when done, add design notes when plans firm up.
 (Compare-first login, the one-shared-session model, and logout-as-detach are
 built — see CLAUDE.md. Remaining hardening, all Worker-side:)
 
-- **No throttle protection on the password-login fallback.** A dead refresh
-  token + 1-min cron = a password login attempt every minute → throttle
-  lockout. Track `lastFullLoginAt` per account and refuse to retry more than
-  ~once/hour; cron logs "session dead, backing off" in between.
-- **Concurrent refresh race** (cron + pull-to-refresh). If VW rotates refresh
-  tokens single-use, the loser kills the session. Mitigate by re-reading stored
-  tokens and retrying once before falling back to passwords.
+Password fallback now has persisted exponential backoff. OAuth refreshes and
+S-PIN challenges are serialized by the account Durable Object (October 2026).
+
 - **Stage markers inside the `vwLogin` HTML scrape.** The scrape is the most
   fragile code we have (by nature); when VW changes the page, today's failure
   is a generic error. Log/throw with the step that died (authorize redirect,
@@ -110,19 +106,13 @@ polls + change-detects server-side, exactly the model below. So notifications ar
 Deployed as `vwapp-api` with secrets pushed; the app resolves the API URL at
 runtime (Metro host in dev, prod Worker in published builds). Details in
 CLAUDE.md. Remaining routine: backend changes need a `wrangler deploy`, app
-changes an EAS Update.
+changes a native TestFlight build (never OTA).
 
 ## 6. Smaller items
 
-- **Command RPCs don't survive client disconnects.** When the app gives up on
-  a slow command (observed: climate stop hanging >60s while the car was
-  driven), the runtime cancels the Worker invocation mid-flight — the VW op
-  may have landed but the tail work (e.g. `endClimateSession`) never runs, so
-  our state diverges from the car's. The `[vw]` lifecycle logs now make this
-  visible (a "started" line with no end line); the fix is to persist intent
-  before the VW call and/or run the VW-op-plus-tail in `ctx.waitUntil` so it
-  finishes after the client hangs up. Needs the execution context threaded
-  into the oRPC handlers.
+- **Long command durability.** RPC work is now retained with `waitUntil` after
+  disconnect (up to the platform's 30-second grace period). Persist command
+  intent for recovery of operations that outlast that window or runtime restarts.
 - Biometric gate on app open (needs a dev build, not Expo Go).
 - Multi-vehicle support: dashboard currently shows `vehicles[0]` only.
 - Login password autofill: add `autoComplete`/`textContentType` so iOS

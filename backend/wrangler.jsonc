@@ -7,6 +7,13 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-06-01",
   "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": {
+    "bindings": [{ "name": "AUTH_SESSIONS", "class_name": "AuthSession" }],
+  },
+  "migrations": [
+    { "tag": "android-gateway-v1", "new_sqlite_classes": ["AndroidGateway"] },
+    { "tag": "auth-v1", "new_sqlite_classes": ["AuthSession"] },
+  ],
   "observability": { "enabled": true },
   // Workers AI powers the voice assistant (STT + GLM-5.2 LLM + TTS), reached via
   // env.AI. No key: it bills to the deploy account, which must have Workers AI

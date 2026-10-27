@@ -1,0 +1,15 @@
+{
+  "name": "@vwapp/integrity-bridge",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": ".venv/bin/frida-compile agent.js -o dist/agent.js",
+    "test": "python3 -m unittest discover -s tests",
+    "format": "prettier --write agent.js package.json config.example.json",
+    "format:check": "prettier --check agent.js package.json config.example.json"
+  },
+  "devDependencies": {
+    "frida-java-bridge": "7.0.13"
+  }
+}

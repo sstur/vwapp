@@ -184,23 +184,27 @@ client secret** (constants are identical at the top of
    `{API}/oidc/v1/token` (`grant_type=authorization_code`, `code_verifier`) →
    access / refresh / id tokens.
 
-**`play_integrity_token` (BROKE EVERYTHING 2026-07-30).** `POST /oidc/v1/token`
-now **requires** a `play_integrity_token` form field on **both** the
-`authorization_code` and `refresh_token` grants; without it VW answers `401
-INVALID_REQUEST` (`origin: CarnetSPAuthorizationServer`, `path: /azs`) — this is
-what broke this app and every other third-party client while the stock app kept
-working. The stock app mints a real Google **Standard Integrity API** token (APK:
-`AzsRequest`/`AzsRefreshRequest`, iface `defpackage/vr0.java`, provider
-`defpackage/xpb.java`, cloud project `820996449805`); it sends the field
-absent/null when attestation fails, so **VW currently only checks the field is
-PRESENT, not that it is valid** — we send the literal `"unavailable"`
-(`PLAY_INTEGRITY_TOKEN` in `backend/src/vw/client.ts`). **This is a STOPGAP**: if
-VW starts really validating it, there is no server-side remedy (Play Integrity
-tokens can't be minted off a genuine device+app). The **refresh** grant also needs
-the original login's **`code_verifier`** replayed (the app persists it —
-`defpackage/xr0.java`; omitting it → `400 Internal Service validation failure`),
-so `codeVerifier` is stored on `vwAccounts` and a session lacking one skips
-straight to a full login.
+**Play Integrity (restored October 2026).** Both OAuth grants require a fresh
+Google Standard Integrity token. `backend/src/integrity.ts` sends only padded
+base64url(SHA256(binding)) to the authenticated Mac bridge: binding is the PKCE
+verifier for login and refresh token for refresh. The PKCE challenge itself
+remains unpadded. The refresh grant also replays the original `code_verifier`.
+The old literal `"unavailable"` no longer works.
+
+`packages/integrity-bridge` uses the connected Moto's installed myVW process
+through Frida/JNI, without UI automation. It can start the process and unfreeze
+it while the screen stays off. Phone setup, version pins and launchd deployment
+are documented in that package. Ordinary VW reads/commands go directly from the
+Worker to VW; the bridge is needed only for login/session renewal. Bridge
+failure never triggers a password-login attempt.
+
+A private `AuthSession` Durable Object per account serializes refreshes and all
+S-PIN challenges across cron/client isolates. It re-reads persisted tokens after
+entering its queue, journals a rotated token before saving to InstantDB, and
+backs off infrastructure failures. S-PIN tokens are cached for reads; EV writes
+request fresh tokens through the same queue. Never call `vwMintSpinSession`
+outside that coordinator in production code: overlapping challenges invalidate
+one another and can consume PIN attempts.
 
 **Status** (vehicles are addressed by **UUID, not VIN**) — **S-PIN gated since
 2026-07-30**: `/rvs` and `/ev` reads now return `403 USER_NOT_AUTHORIZED`

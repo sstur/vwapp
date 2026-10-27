@@ -20,3 +20,7 @@ CREDS_ENC_KEY=base64-of-32-random-bytes
 #   APPLE_MAPS_TEAM_ID=your-apple-team-id
 #   APPLE_MAPS_KEY_ID=your-mapkit-key-id
 #   APPLE_MAPS_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----"
+
+# Required: authenticated HTTPS Mac integrity service (see packages/integrity-bridge).
+INTEGRITY_BRIDGE_URL=https://your-private-bridge.example.com
+INTEGRITY_BRIDGE_KEY=your-random-bridge-api-key

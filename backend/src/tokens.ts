@@ -1,19 +1,17 @@
 /** Keeping a stored VW account's tokens usable (refresh or re-login). */
 import { unseal } from "./crypto";
 import type { AppEnv } from "./env";
+import { integrityProvider, IntegrityUnavailableError } from "./integrity";
 import {
   clearLoginFailures,
   recordLoginFailure,
-  saveCarnetToken,
-  updateTokens,
   type Db,
   type StoredAccount,
 } from "./store";
 import {
-  jwtExpiryMs,
   VwAuthError,
+  VwCommandError,
   vwLogin,
-  vwMintSpinSession,
   vwRefresh,
   type VwTokens,
 } from "./vw/client";
@@ -50,30 +48,17 @@ export function loginBackoffMs(failures: number): number {
  * account. The breaker is deliberately NOT armed by refresh failures (the
  * refresh grant isn't the throttled resource); only real logins count.
  */
-export async function reauth(
+export async function renewAccount(
   db: Db,
   env: AppEnv,
   account: StoredAccount,
   forceRelogin: boolean,
 ): Promise<VwTokens> {
-  // Armed breaker short-circuits the WHOLE reauth, refresh included: the
-  // breaker only ever arms after a login that itself followed a failed
-  // refresh, so retrying the refresh every tick just adds 1440 doomed calls a
-  // day to VW's token endpoint. One refresh+login attempt per window instead.
-  if (account.login.blockedUntil > Date.now()) {
-    const mins = Math.ceil((account.login.blockedUntil - Date.now()) / 60_000);
-    const msg =
-      `VW auth blocked for another ${String(mins)}m after ` +
-      `${String(account.login.failures)} consecutive failed password logins`;
-    console.log(`[auth] account=${account.id} ${msg}`);
-    throw new VwLoginBlockedError(msg);
-  }
   let tokens: VwTokens | null = null;
   // VW's refresh grant now also requires the original login code_verifier, so a
   // session stored without one can't refresh — go straight to a full login
   // (which re-stores a verifier).
   if (
-    !forceRelogin &&
     account.tokens.refreshToken !== null &&
     account.tokens.codeVerifier !== null
   ) {
@@ -81,18 +66,25 @@ export async function reauth(
       tokens = await vwRefresh(
         account.tokens.refreshToken,
         account.tokens.codeVerifier,
+        integrityProvider(env),
       );
       console.log(`[auth] account=${account.id} token refresh ok`);
       // A working refresh means the session is healthy again — re-open the
       // breaker so the next genuine need for a login isn't blocked.
       await clearLoginFailures(db, account);
     } catch (err) {
+      if (!(err instanceof VwAuthError)) throw err;
       console.log(
         `[auth] account=${account.id} token refresh failed (${err instanceof Error ? err.message : "unknown"})`,
       );
     }
   }
   if (tokens === null) {
+    if (account.login.blockedUntil > Date.now()) {
+      throw new VwLoginBlockedError(
+        "VW password login is temporarily backed off after failed attempts.",
+      );
+    }
     const trigger = forceRelogin
       ? "forced"
       : account.tokens.refreshToken === null
@@ -109,10 +101,15 @@ export async function reauth(
       password: string;
     };
     try {
-      tokens = await vwLogin(creds.username, creds.password);
+      tokens = await vwLogin(
+        creds.username,
+        creds.password,
+        integrityProvider(env),
+      );
       console.log(`[auth] account=${account.id} VW password login ok`);
       await clearLoginFailures(db, account);
     } catch (err) {
+      if (err instanceof IntegrityUnavailableError) throw err;
       const blockedUntil =
         Date.now() + loginBackoffMs(account.login.failures + 1);
       await recordLoginFailure(db, account, blockedUntil);
@@ -125,7 +122,37 @@ export async function reauth(
       throw err;
     }
   }
-  await updateTokens(db, account.id, tokens);
+  return tokens;
+}
+
+/** All isolates and cron/client callers converge on one serialized session. */
+export async function reauth(
+  _db: Db,
+  env: AppEnv,
+  account: StoredAccount,
+  rejected: boolean,
+): Promise<VwTokens> {
+  const stub = env.AUTH_SESSIONS.get(env.AUTH_SESSIONS.idFromName(account.id));
+  const response = await stub.fetch("https://auth-session/renew", {
+    method: "POST",
+    body: JSON.stringify({
+      accountId: account.id,
+      previousAccessToken: account.tokens.accessToken,
+      rejected,
+    }),
+  });
+  if (!response.ok) {
+    const body = await response.json<{ error?: string }>();
+    if (body.error === "blocked")
+      throw new VwLoginBlockedError(
+        "VW login temporarily backed off. Please try later.",
+      );
+    if (body.error === "auth")
+      throw new VwAuthError("VW session could not be renewed.");
+    throw new IntegrityUnavailableError();
+  }
+  const tokens = await response.json<VwTokens>();
+  account.tokens = tokens;
   return tokens;
 }
 
@@ -139,22 +166,7 @@ export async function ensureTokens(
   return reauth(db, env, account, false);
 }
 
-/** Re-mint this long before a cached carnet token actually expires. */
-const CARNET_MARGIN_MS = 3 * 60_000;
-/** Fallback lifetime if the minted token carries no `exp` (VW's is 30 min). */
-const CARNET_FALLBACK_TTL_MS = 25 * 60_000;
-
-/**
- * A usable per-vehicle carnet (S-PIN session) token, minted only when the
- * cached one is missing or near expiry.
- *
- * VW now gates the *status reads* behind this token (see vwGetStatus), so the
- * every-minute cron would otherwise mint one per tick — 60 S-PIN challenges an
- * hour against an endpoint whose `remainingTries` counter guards a lockout that
- * needs a dealer reset. VW's tokens live 30 minutes, so caching them on the
- * account cuts that to ~2/hour/vehicle. Pass `force` after a 401 to bypass the
- * cache and re-mint.
- */
+/** Serialize all S-PIN challenges per account, including commands and cron. */
 export async function ensureCarnetToken(
   db: Db,
   env: AppEnv,
@@ -163,31 +175,31 @@ export async function ensureCarnetToken(
   spin: string,
   opts: { force?: boolean } = {},
 ): Promise<string> {
-  const cached = account.carnetTokens[uuid];
-  if (
-    opts.force !== true &&
-    cached !== undefined &&
-    cached.expiresAt > Date.now() + CARNET_MARGIN_MS
-  )
-    return cached.token;
-
-  const tokens = await ensureTokens(db, env, account);
-  let token: string;
-  try {
-    token = await vwMintSpinSession(tokens, uuid, spin);
-  } catch (err) {
-    // Access token died between the expiry check and the mint — re-login once.
-    if (!(err instanceof VwAuthError)) throw err;
-    token = await vwMintSpinSession(
-      await reauth(db, env, account, true),
-      uuid,
-      spin,
-    );
+  await ensureTokens(db, env, account);
+  const stub = env.AUTH_SESSIONS.get(env.AUTH_SESSIONS.idFromName(account.id));
+  const mint = () =>
+    stub.fetch("https://auth-session/carnet", {
+      method: "POST",
+      body: JSON.stringify({
+        accountId: account.id,
+        uuid,
+        spin,
+        force: opts.force === true,
+      }),
+    });
+  let response = await mint();
+  if (response.status === 401) {
+    await reauth(db, env, account, true);
+    response = await mint();
   }
-  const expiresAt = jwtExpiryMs(token) ?? Date.now() + CARNET_FALLBACK_TTL_MS;
-  await saveCarnetToken(db, account, uuid, { token, expiresAt });
-  console.log(
-    `[auth] account=${account.id} vehicle=${uuid} minted carnet token (expires ${new Date(expiresAt).toISOString()})`,
-  );
-  return token;
+  const body = await response.json<{
+    token?: string;
+    expiresAt?: number;
+    error?: string;
+  }>();
+  if (!response.ok || !body.token || !body.expiresAt) {
+    throw new VwCommandError(body.error ?? "VW S-PIN session is unavailable.");
+  }
+  account.carnetTokens[uuid] = { token: body.token, expiresAt: body.expiresAt };
+  return body.token;
 }
