@@ -71,12 +71,7 @@ export default function DoorsScreen() {
         {!isLoading && errorMessage == null && snapshot === undefined ? (
           <Paragraph color="$color10">No status stored yet.</Paragraph>
         ) : null}
-        {snapshot?.closuresKnown === false ? (
-          <Paragraph color="$color10">
-            The current myVW vehicle graphic could not be read confidently. Lock
-            status remains available on Home.
-          </Paragraph>
-        ) : snapshot !== undefined ? (
+        {snapshot !== undefined ? (
           <YStack
             gap="$3"
             transition="quick"
@@ -116,9 +111,7 @@ export default function DoorsScreen() {
                         ? "open"
                         : unlockedDoors.some((u) => u.startsWith(name))
                           ? "unlocked"
-                          : snapshot.source === "android"
-                            ? "not-shown-open"
-                            : "closed"
+                          : "closed"
                     }
                   />
                 ))}
@@ -131,27 +124,13 @@ export default function DoorsScreen() {
                   <StatusRow
                     key={name}
                     label={windowLabel(name)}
-                    status={
-                      openWindows.includes(name)
-                        ? "open"
-                        : snapshot.source === "android"
-                          ? "not-shown-open"
-                          : "closed"
-                    }
+                    status={openWindows.includes(name) ? "open" : "closed"}
                   />
                 ))}
               </IosGroup>
             </YStack>
             <Paragraph color="$color10" fontSize="$2" self="center">
-              {snapshot.source === "android"
-                ? "As shown by myVW · Read"
-                : "Updated"}{" "}
-              {agoLabel(
-                snapshot.observedAt ??
-                  snapshot.capturedAt ??
-                  snapshot.createdAt,
-                now,
-              )}
+              Updated {agoLabel(snapshot.capturedAt ?? snapshot.createdAt, now)}
             </Paragraph>
           </YStack>
         ) : null}
@@ -165,14 +144,13 @@ function StatusRow({
   status,
 }: {
   label: string;
-  status: "open" | "unlocked" | "closed" | "not-shown-open";
+  status: "open" | "unlocked" | "closed";
 }) {
   const c = useIosColors();
   const style = {
     open: { text: "Open", color: c.red },
     unlocked: { text: "Unlocked", color: c.warn },
     closed: { text: "Closed", color: undefined },
-    "not-shown-open": { text: "Not shown open", color: undefined },
   }[status];
   return <IosRow label={label} value={style.text} valueColor={style.color} />;
 }

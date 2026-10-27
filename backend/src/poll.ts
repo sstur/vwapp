@@ -17,7 +17,6 @@ import {
   type Db,
 } from "./store";
 import { ensureTokens } from "./tokens";
-import { usesAndroid, vehicleCall } from "./vehicle/android";
 import {
   vwAwaitCommandResult,
   VwBusyError,
@@ -31,8 +30,6 @@ import {
 const SNAPSHOT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
 export async function pollAllVehicles(db: Db, env: AppEnv): Promise<void> {
-  // UI reads are expensive; leave the phone free for interactive commands.
-  if (usesAndroid(env) && new Date().getUTCMinutes() % 5 !== 0) return;
   const accounts = await listAccounts(db);
   let polled = 0;
   let written = 0;
@@ -51,11 +48,8 @@ export async function pollAllVehicles(db: Db, env: AppEnv): Promise<void> {
         continue;
       }
       for (const vehicle of vehicles) {
-        const status = await readStatus(db, env, account, vehicle, creds.spin, {
-          background: true,
-        });
-        if (usesAndroid(env) || (await saveSnapshot(db, vehicle.id, status)))
-          written++;
+        const status = await readStatus(db, env, account, vehicle, creds.spin);
+        if (await saveSnapshot(db, vehicle.id, status)) written++;
         polled++;
       }
     } catch (err) {
@@ -103,33 +97,6 @@ export async function runClimateKeepalive(db: Db, env: AppEnv): Promise<void> {
       );
     };
     try {
-      if (usesAndroid(env)) {
-        const expired = Date.now() >= session.expiresAt;
-        await vehicleCall(
-          env,
-          account,
-          vehicle,
-          "climate",
-          { enabled: !expired, ...(expired ? {} : { tempF: session.tempF }) },
-          {
-            background: true,
-            climateSessionId: session.id,
-            ...(expired
-              ? {
-                  completion: {
-                    vehicleId: vehicle.id,
-                    climate: {
-                      kind: "stop" as const,
-                      reason: "expired" as const,
-                    },
-                  },
-                }
-              : {}),
-          },
-        );
-        if (!expired) await updateClimateSession(db, session.id, { error: "" });
-        continue;
-      }
       const tokens = await ensureTokens(db, env, account);
       const creds = JSON.parse(
         await unseal(env.CREDS_ENC_KEY, account.sealed),

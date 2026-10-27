@@ -109,27 +109,7 @@ const _schema = i.schema({
       createdAt: i.number().indexed(),
     }),
     // One row per VW status fetch; the app live-queries the latest of these.
-    vehicleOperations: i.entity({
-      operation: i.string(),
-      state: i.string(),
-      createdAt: i.number().indexed(),
-      finishedAt: i.number().optional(),
-      errorCode: i.string().optional(),
-      message: i.string().optional(),
-    }),
     snapshots: i.entity({
-      source: i.string().optional(),
-      observedAt: i.number().optional(),
-      reportedUpdatedText: i.string().optional(),
-      reportedUpdates: i.json().optional(),
-      reportedParkedText: i.string().optional(),
-      parkedAddress: i.string().optional(),
-      odometerObservedAt: i.number().optional(),
-      closuresKnown: i.boolean().optional(),
-      climateOn: i.boolean().optional(),
-      targetTempF: i.number().optional(),
-      minutesToTarget: i.number().optional(),
-      chargingTargetSoc: i.number().optional(),
       /** When the Worker stored this row. Indexed for order/prune queries. */
       createdAt: i.number().indexed(),
       /** When VW captured the data, epoch ms. */
@@ -179,15 +159,6 @@ const _schema = i.schema({
         onDelete: "cascade",
       },
       reverse: { on: "vwAccounts", has: "many", label: "vehicles" },
-    },
-    operationVehicle: {
-      forward: {
-        on: "vehicleOperations",
-        has: "one",
-        label: "vehicle",
-        onDelete: "cascade",
-      },
-      reverse: { on: "vehicles", has: "many", label: "operations" },
     },
     snapshotVehicle: {
       forward: {

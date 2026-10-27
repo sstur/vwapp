@@ -1,7 +1,6 @@
 import { useTransientError } from "@/hooks/use-transient-error";
 import { orpc } from "@/rpc";
 import { useMutation } from "@tanstack/react-query";
-import { randomUUID } from "expo-crypto";
 import { Alert } from "react-native";
 import { AnimatePresence, Paragraph, Spinner, Text, XStack } from "tamagui";
 import { IosButton, IosCard } from "./ios-list";
@@ -29,7 +28,7 @@ export function LockControl({
   const shownLocked = inFlight !== undefined ? inFlight === "lock" : locked;
 
   const run = (action: "lock" | "unlock") => {
-    command.mutate({ requestId: randomUUID(), uuid, action });
+    command.mutate({ uuid, action });
   };
 
   // Native UIAlertController; unlocking exposes the car, so it's worth a

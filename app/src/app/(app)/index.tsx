@@ -3,7 +3,6 @@ import { ChargeControl } from "@/components/charge-control";
 import { ClimateControl } from "@/components/climate-control";
 import { IosButton, IosCard, IosGroup, IosRow } from "@/components/ios-list";
 import { LockControl } from "@/components/lock-control";
-import { OperationStatus } from "@/components/operation-status";
 import { VoiceControl } from "@/components/voice-control";
 import { db } from "@/db";
 import { agoLabel, useNow } from "@/hooks/use-now";
@@ -277,24 +276,11 @@ function StatusCards({
       animateOnly={["opacity", "transform"]}
       enterStyle={{ opacity: 0, y: 20 }}
     >
-      <OperationStatus vehicleId={vehicleId} />
       <ChargeControl s={s} uuid={uuid} />
       <LockControl uuid={uuid} locked={s.locked ?? null} />
-      <ClimateControl
-        vehicleId={vehicleId}
-        uuid={uuid}
-        observedOn={s.climateOn}
-      />
+      <ClimateControl vehicleId={vehicleId} uuid={uuid} />
       <IosGroup>
-        <IosRow
-          label="Odometer"
-          value={formatMiles(s.odometerKm)}
-          subtitle={
-            s.source === "android" && s.odometerObservedAt != null
-              ? `Read from myVW ${agoLabel(s.odometerObservedAt, now)}`
-              : undefined
-          }
-        />
+        <IosRow label="Odometer" value={formatMiles(s.odometerKm)} />
         <IosRow
           label="Doors & windows"
           value={sec.text}
@@ -313,19 +299,13 @@ function StatusCards({
           />
         ) : null}
         <IosRow
-          label={s.source === "android" ? "Read from myVW" : "Updated"}
-          value={agoLabel(s.observedAt ?? s.capturedAt ?? s.createdAt, now)}
+          label="Updated"
+          value={agoLabel(s.capturedAt ?? s.createdAt, now)}
           onPress={() => {
             router.push("/updates");
           }}
         />
       </IosGroup>
-      {s.source === "android" ? (
-        <Paragraph color="$color10" fontSize="$2">
-          {s.reportedUpdatedText ?? "Vehicle report time unavailable"}. myVW may
-          show cached data.
-        </Paragraph>
-      ) : null}
       <IosGroup>
         <IosRow
           label="Activity"
@@ -351,13 +331,9 @@ function StatusCards({
  * fallback, individually unlocked doors) as a warning; otherwise reassures.
  */
 function securitySummary(s: Snapshot): { text: string; warn: boolean } {
-  if (s.closuresKnown === false) return { text: "Unavailable", warn: false };
   const open = openSummary(strArr(s.openDoors), strArr(s.openWindows));
   if (open !== null) return { text: open, warn: true };
   const unlocked = unlockedSummary(strArr(s.unlockedDoors));
   if (unlocked !== null) return { text: unlocked, warn: true };
-  return {
-    text: s.source === "android" ? "None shown open" : "All closed",
-    warn: false,
-  };
+  return { text: "All closed", warn: false };
 }

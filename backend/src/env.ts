@@ -1,8 +1,4 @@
 export interface AppEnv {
-  VEHICLE_PROVIDER?: "android" | "direct";
-  ANDROID_BRIDGE_URL?: string;
-  ANDROID_BRIDGE_KEY?: string;
-  ANDROID_GATEWAY?: DurableObjectNamespace;
   INSTANT_APP_ID: string;
   INSTANT_ADMIN_TOKEN: string;
   /** base64 of 32 random bytes — AES-GCM key for sealing VW credentials. */

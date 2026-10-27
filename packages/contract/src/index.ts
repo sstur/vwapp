@@ -12,18 +12,6 @@ export type VehicleDTO = z.infer<typeof vehicleSchema>;
 
 /** Live status for one vehicle (mirrors the verified PoC summary). */
 export const statusSchema = z.object({
-  source: z.enum(["android", "direct"]).optional(),
-  observedAt: z.number().nullable().optional(),
-  reportedUpdatedText: z.string().nullable().optional(),
-  reportedUpdates: z.record(z.string(), z.string()).optional(),
-  reportedParkedText: z.string().nullable().optional(),
-  parkedAddress: z.string().nullable().optional(),
-  odometerObservedAt: z.number().nullable().optional(),
-  closuresKnown: z.boolean().optional(),
-  climateOn: z.boolean().nullable().optional(),
-  targetTempF: z.number().nullable().optional(),
-  minutesToTarget: z.number().nullable().optional(),
-  chargingTargetSoc: z.number().nullable().optional(),
   vin: z.string(),
   soc: z.number().nullable(),
   chargeState: z.string().nullable(),
@@ -87,7 +75,6 @@ export type InboxMessageDTO = z.infer<typeof inboxMessageSchema>;
 
 /** A remote command that changes vehicle state (needs the stored S-PIN). */
 export const commandSchema = z.object({
-  requestId: z.uuid().optional(),
   uuid: z.string().optional(),
   action: z.enum(["lock", "unlock"]),
 });
@@ -106,7 +93,6 @@ export type ParkedMapInput = z.infer<typeof parkedMapSchema>;
 
 /** Start a managed climate session: keep climate on for `durationMin`, at `tempF`. */
 export const climateStartSchema = z.object({
-  requestId: z.uuid().optional(),
   uuid: z.string().optional(),
   /** Cabin target temperature, °F (VW range). */
   tempF: z.number().int().min(60).max(85),
@@ -154,28 +140,13 @@ export const contract = {
     logout: oc.output(z.object({ ok: z.literal(true) })),
   },
   vehicle: {
-    connection: oc.output(
-      z.object({
-        provider: z.string(),
-        activeRequestId: z.string().nullable(),
-        activeOperation: z.string().nullable(),
-        startedAt: z.number().nullable(),
-        queueLength: z.number(),
-        lastAlarmAt: z.number().nullable(),
-      }),
-    ),
     /**
      * Fetch live status from VW now and store a snapshot (which the app
      * receives via its InstantDB subscription). Defaults to the single
      * vehicle when uuid is omitted.
      */
     refresh: oc
-      .input(
-        z.object({
-          uuid: z.string().optional(),
-          requestId: z.uuid().optional(),
-        }),
-      )
+      .input(z.object({ uuid: z.string().optional() }))
       .output(statusSchema),
     /**
      * Lock or unlock the doors via VW (S-PIN-gated server-side). Waits for VW
@@ -198,45 +169,24 @@ export const contract = {
       .output(z.object({ ok: z.literal(true) })),
     /** Stop climate now and end the managed session. */
     climateStop: oc
-      .input(
-        z.object({
-          uuid: z.string().optional(),
-          requestId: z.uuid().optional(),
-        }),
-      )
+      .input(z.object({ uuid: z.string().optional() }))
       .output(z.object({ ok: z.literal(true) })),
     /** The car's current cabin target temperature (°F) — used to seed the start dialog. */
     climateInfo: oc
-      .input(
-        z.object({
-          uuid: z.string().optional(),
-          requestId: z.uuid().optional(),
-        }),
-      )
+      .input(z.object({ uuid: z.string().optional() }))
       .output(z.object({ targetTempF: z.number().nullable() })),
     /** Start charging now (S-PIN-gated). Requires the car to be plugged in. */
     chargeStart: oc
-      .input(
-        z.object({
-          uuid: z.string().optional(),
-          requestId: z.uuid().optional(),
-        }),
-      )
+      .input(z.object({ uuid: z.string().optional() }))
       .output(z.object({ ok: z.literal(true) })),
     /** Stop charging now (S-PIN-gated). Async at VW; the snapshot reflects it shortly. */
     chargeStop: oc
-      .input(
-        z.object({
-          uuid: z.string().optional(),
-          requestId: z.uuid().optional(),
-        }),
-      )
+      .input(z.object({ uuid: z.string().optional() }))
       .output(z.object({ ok: z.literal(true) })),
     /** Set the charge limit (target SoC %, 10% steps). S-PIN-gated. */
     setChargeLimit: oc
       .input(
         z.object({
-          requestId: z.uuid().optional(),
           uuid: z.string().optional(),
           targetSoc: z.number().int().min(50).max(100).multipleOf(10),
         }),
@@ -244,22 +194,12 @@ export const contract = {
       .output(z.object({ ok: z.literal(true) })),
     /** The car's recent activity log (commands/trips/alerts). S-PIN-gated read. */
     activity: oc
-      .input(
-        z.object({
-          uuid: z.string().optional(),
-          requestId: z.uuid().optional(),
-        }),
-      )
+      .input(z.object({ uuid: z.string().optional() }))
       .output(z.object({ events: z.array(activityEventSchema) })),
     /** myVW message-center inbox. S-PIN-gated read. (Used in-process by the
         voice assistant; the app reads messages from InstantDB instead.) */
     messages: oc
-      .input(
-        z.object({
-          uuid: z.string().optional(),
-          requestId: z.uuid().optional(),
-        }),
-      )
+      .input(z.object({ uuid: z.string().optional() }))
       .output(z.object({ messages: z.array(inboxMessageSchema) })),
     /**
      * Sync the message-center inbox from VW into InstantDB (mirror): upsert
@@ -268,12 +208,7 @@ export const contract = {
      * VW directly. S-PIN-gated.
      */
     refreshMessages: oc
-      .input(
-        z.object({
-          uuid: z.string().optional(),
-          requestId: z.uuid().optional(),
-        }),
-      )
+      .input(z.object({ uuid: z.string().optional() }))
       .output(z.object({ ok: z.literal(true) })),
     /**
      * Set our per-message read override in InstantDB: true = read, false =
@@ -324,7 +259,6 @@ export const contract = {
     ask: oc
       .input(
         z.object({
-          requestId: z.uuid().optional(),
           uuid: z.string().optional(),
           /** Base64-encoded recorded audio (m4a/aac from the app recorder). */
           audioBase64: z.string().min(1),

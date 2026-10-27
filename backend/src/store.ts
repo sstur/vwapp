@@ -4,7 +4,6 @@ import type { StatusDTO, VehicleDTO } from "@vwapp/contract";
 import schema from "@vwapp/db";
 import type { Sealed } from "./crypto";
 import type { AppEnv } from "./env";
-import { legacyInboxMatch } from "./inbox";
 import type { InboxMessage, VwTokens } from "./vw/client";
 
 export function getDb(env: AppEnv) {
@@ -194,18 +193,10 @@ async function resolveAccountUpsert(
     tokenExpiresAt: tokens.expiresAt,
     codeVerifier: tokens.codeVerifier,
   };
-  const storedVehicles: StoredVehicle[] = vehicles.map((v) => {
-    const prior = existingVehicles.find(
-      (x) => x.uuid === v.uuid || x.vin === v.vin,
-    );
-    return {
-      ...v,
-      id: prior?.id ?? id(),
-      uuid: prior?.uuid ?? v.uuid,
-      nickname: v.nickname ?? prior?.nickname ?? null,
-      model: v.model ?? prior?.model ?? null,
-    };
-  });
+  const storedVehicles: StoredVehicle[] = vehicles.map((v) => ({
+    ...v,
+    id: existingVehicles.find((x) => x.uuid === v.uuid)?.id ?? id(),
+  }));
   return {
     exists: existing !== undefined,
     accountId,
@@ -399,7 +390,7 @@ export async function saveSnapshot(
   db: Db,
   vehicleId: string,
   status: StatusDTO,
-  opts: { force?: boolean; snapshotId?: string } = {},
+  opts: { force?: boolean } = {},
 ): Promise<boolean> {
   const latest = await getLatestSnapshot(db, vehicleId);
   if (
@@ -415,29 +406,9 @@ export async function saveSnapshot(
     return false; // deduped — VW reported nothing new
   }
   await db.transact(
-    tx(db.tx.snapshots[opts.snapshotId ?? id()])
-      .update({
+    tx(db.tx.snapshots[id()])
+      .create({
         createdAt: Date.now(),
-        ...(status.source !== undefined
-          ? {
-              source: status.source,
-              observedAt: status.observedAt ?? null,
-              reportedUpdatedText: status.reportedUpdatedText ?? null,
-              reportedUpdates: status.reportedUpdates ?? {},
-              reportedParkedText: status.reportedParkedText ?? null,
-              parkedAddress: status.parkedAddress ?? null,
-              odometerObservedAt:
-                status.odometerObservedAt ??
-                (status.source === "android"
-                  ? (latest?.odometerObservedAt ?? null)
-                  : null),
-              closuresKnown: status.closuresKnown ?? null,
-              climateOn: status.climateOn ?? null,
-              targetTempF: status.targetTempF ?? null,
-              minutesToTarget: status.minutesToTarget ?? null,
-              chargingTargetSoc: status.chargingTargetSoc ?? null,
-            }
-          : {}),
         capturedAt: status.capturedAt,
         soc: status.soc,
         chargeState: status.chargeState,
@@ -451,9 +422,7 @@ export async function saveSnapshot(
         openWindows: status.openWindows,
         unlockedDoors: status.unlockedDoors,
         rangeKm: status.rangeKm,
-        odometerKm:
-          status.odometerKm ??
-          (status.source === "android" ? (latest?.odometerKm ?? null) : null),
+        odometerKm: status.odometerKm,
         parkedLat: status.parkedLat,
         parkedLng: status.parkedLng,
         parkedAt: status.parkedAt,
@@ -479,31 +448,6 @@ export async function getLatestSnapshot(db: Db, vehicleId: string) {
     },
   });
   return res.snapshots[0];
-}
-
-/** Publish a verified setting immediately, retaining every other reading's age.
- * The next full UI read may take two minutes. Never leave the picker showing
- * its old value after the command has already been confirmed by myVW.
- */
-export async function saveConfirmedChargeLimit(
-  db: Db,
-  vehicleId: string,
-  targetSoc: number,
-  requestId: string,
-): Promise<void> {
-  const latest = await getLatestSnapshot(db, vehicleId);
-  if (latest?.source !== "android") return;
-  const { id: previousSnapshotId, ...fields } = latest;
-  if (previousSnapshotId === requestId) return;
-  await db.transact(
-    tx(db.tx.snapshots[requestId])
-      .update({
-        ...fields,
-        targetSoc,
-        createdAt: Date.now(),
-      })
-      .link({ vehicle: vehicleId }),
-  );
 }
 
 /** parkedAt of the vehicle's latest snapshot — when the car last parked. */
@@ -618,16 +562,15 @@ export async function listActiveClimateSessions(
 export async function startClimateSession(
   db: Db,
   vehicleId: string,
-  fields: { tempF: number; expiresAt: number; sessionId?: string },
+  fields: { tempF: number; expiresAt: number },
 ): Promise<void> {
   const prior = await getActiveClimateSession(db, vehicleId);
-  if (fields.sessionId !== undefined && prior?.id === fields.sessionId) return;
   const now = Date.now();
   await db.transact([
     ...(prior !== null
       ? [tx(db.tx.climateSessions[prior.id]).update({ state: "stopped" })]
       : []),
-    tx(db.tx.climateSessions[fields.sessionId ?? id()])
+    tx(db.tx.climateSessions[id()])
       .create({
         tempF: fields.tempF,
         expiresAt: fields.expiresAt,
@@ -705,24 +648,16 @@ export async function syncMessages(
   accountId: string,
   vw: InboxMessage[],
   complete: boolean,
-  prune = true,
 ): Promise<void> {
   const res = await db.query({
     vwAccounts: { $: { where: { id: accountId } }, messages: {} },
   });
   const existing = (res.vwAccounts[0]?.messages ?? []) as MessageRecord[];
   const byMessageId = new Map(existing.map((m) => [m.messageId, m]));
-  const claimed = new Set<string>();
   const now = Date.now();
 
   const ops = vw.map((m) => {
-    const prev =
-      byMessageId.get(m.id) ??
-      legacyInboxMatch(
-        existing.filter((row) => !claimed.has(row.id)),
-        m,
-      );
-    if (prev) claimed.add(prev.id);
+    const prev = byMessageId.get(m.id);
     const rowId = prev?.id ?? id();
     const fields = {
       messageId: m.id,
@@ -744,7 +679,7 @@ export async function syncMessages(
     fetchedAts.length > 0 ? Math.min(...fetchedAts) : null;
   const deletions = existing
     .filter((row) => {
-      if (!prune || fetchedIds.has(row.messageId)) return false;
+      if (fetchedIds.has(row.messageId)) return false;
       return (
         complete ||
         (oldestFetchedAt !== null && (row.at ?? 0) >= oldestFetchedAt)
@@ -807,25 +742,4 @@ export async function setMessageDeleted(
     }),
   );
   return true;
-}
-
-/** Durable, client-readable operation progress; never contains credentials or raw UI. */
-export async function recordVehicleOperation(
-  db: Db,
-  requestId: string,
-  vehicleId: string,
-  fields: {
-    operation: string;
-    state: string;
-    createdAt: number;
-    finishedAt?: number;
-    errorCode?: string;
-    message?: string;
-  },
-): Promise<void> {
-  await db.transact(
-    tx(db.tx.vehicleOperations[requestId])
-      .update(fields)
-      .link({ vehicle: vehicleId }),
-  );
 }

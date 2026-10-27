@@ -13,7 +13,6 @@ import {
 import type { InstaQLEntity } from "@instantdb/react-native";
 import { useMutation } from "@tanstack/react-query";
 import type { AppSchema } from "@vwapp/db";
-import { randomUUID } from "expo-crypto";
 import {
   AnimatePresence,
   H2,
@@ -113,7 +112,7 @@ export function ChargeControl({ s, uuid }: { s: Snapshot; uuid: string }) {
             tone="red"
             disabled={stop.isPending}
             onPress={() => {
-              stop.mutate({ requestId: randomUUID(), uuid });
+              stop.mutate({ uuid });
             }}
             label={stop.isPending ? "Stopping…" : "Stop"}
           />
@@ -123,7 +122,7 @@ export function ChargeControl({ s, uuid }: { s: Snapshot; uuid: string }) {
             icon="bolt.car.fill"
             disabled={start.isPending}
             onPress={() => {
-              start.mutate({ requestId: randomUUID(), uuid });
+              start.mutate({ uuid });
             }}
             label={start.isPending ? "Starting…" : "Charge"}
           />
@@ -141,11 +140,7 @@ export function ChargeControl({ s, uuid }: { s: Snapshot; uuid: string }) {
                 selection={carLimit}
                 onSelectionChange={(next) => {
                   if (next !== carLimit && !setLimit.isPending) {
-                    setLimit.mutate({
-                      requestId: randomUUID(),
-                      uuid,
-                      targetSoc: next,
-                    });
+                    setLimit.mutate({ uuid, targetSoc: next });
                   }
                 }}
                 modifiers={[
@@ -168,11 +163,6 @@ export function ChargeControl({ s, uuid }: { s: Snapshot; uuid: string }) {
         </XStack>
       </XStack>
 
-      {s.source === "android" ? (
-        <Paragraph color="$color10" fontSize="$2">
-          Saved charging-location settings may override this limit.
-        </Paragraph>
-      ) : null}
       <AnimatePresence>
         {error ? (
           <Text
@@ -211,11 +201,9 @@ function stateLabel(s: Snapshot): string {
       ? ` ${String(s.chargePowerKw)} kW`
       : "";
   // minutesToFull is whole minutes, so <1m arrives as 0 and drops the estimate.
-  const minutes = s.minutesToTarget ?? s.minutesToFull;
-  const chargingTarget = s.chargingTargetSoc ?? s.targetSoc;
   const eta =
-    minutes != null && minutes > 0
-      ? ` · ${fmtEta(minutes)} to ${chargingTarget != null ? `${String(chargingTarget)}%` : "target"}`
+    s.minutesToFull != null && s.minutesToFull > 0
+      ? ` · ${fmtEta(s.minutesToFull)} to full`
       : "";
   return `Charging${power}${eta}`;
 }

@@ -104,11 +104,11 @@ export default function ParkedScreen() {
               <IosRow
                 icon="mappin.and.ellipse"
                 iconColor={ios.blue}
-                label={snapshot?.parkedAddress ?? "Last parked"}
+                label="Last parked"
                 subtitle={
                   parked.at !== null
                     ? `${clockLabel(parked.at, now)} · ${agoLabel(parked.at, now)}`
-                    : (snapshot?.reportedParkedText ?? undefined)
+                    : undefined
                 }
               />
               <IosRow

@@ -8,11 +8,10 @@
     "version": "node scripts/version.mts",
     "publish:ios": "pnpm --filter @vwapp/mobile run publish:ios",
     "deploy": "pnpm --filter @vwapp/backend run deploy",
-    "test": "tsc --noEmit -p scripts/tsconfig.json && eslint scripts && pnpm --recursive --parallel --aggregate-output run \"/^(typecheck|lint|format:check)$/\" && pnpm run test:android",
+    "test": "tsc --noEmit -p scripts/tsconfig.json && eslint scripts && pnpm --recursive --parallel --aggregate-output run \"/^(typecheck|lint|format:check)$/\"",
     "typecheck": "tsc --noEmit -p scripts/tsconfig.json && pnpm --recursive --parallel run typecheck",
     "lint": "eslint scripts && pnpm --recursive --parallel run lint",
-    "format": "pnpm --recursive --parallel --aggregate-output run format",
-    "test:android": "pnpm --filter @vwapp/backend test:unit && cd packages/android-bridge && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -q"
+    "format": "pnpm --recursive --parallel --aggregate-output run format"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",

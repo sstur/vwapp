@@ -4,14 +4,12 @@
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "lib": ["ES2022", "WebWorker"],
-    "types": ["node"]
+    "types": []
   },
   "include": [
     "src",
     "instant.schema.ts",
     "instant.perms.ts",
-    "worker-configuration.d.ts",
-    "tests",
-    "vitest.config.ts"
+    "worker-configuration.d.ts"
   ]
 }

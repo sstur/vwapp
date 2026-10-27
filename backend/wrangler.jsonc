@@ -7,32 +7,24 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-06-01",
   "compatibility_flags": ["nodejs_compat"],
-  "vars": { "VEHICLE_PROVIDER": "android" },
-  "durable_objects": {
-    "bindings": [{ "name": "ANDROID_GATEWAY", "class_name": "AndroidGateway" }],
-  },
-  "migrations": [
-    { "tag": "android-gateway-v1", "new_sqlite_classes": ["AndroidGateway"] },
-  ],
   "observability": { "enabled": true },
   // Workers AI powers the voice assistant (STT + GLM-5.2 LLM + TTS), reached via
   // env.AI. No key: it bills to the deploy account, which must have Workers AI
   // enabled. In dev, `wrangler dev` proxies these calls to the real Workers AI.
   "ai": { "binding": "AI" },
-  // One-minute ticks maintain requested climate sessions. Android status reads
-  // run every fifth tick and yield to interactive phone work. Alarms, not cron
-  // invocations, finish admitted jobs after disconnects.
-  "env": {
-    "integration": {
-      "name": "vwapp-api-integration",
-      "vars": { "VEHICLE_PROVIDER": "android" },
-      "durable_objects": {
-        "bindings": [
-          { "name": "ANDROID_GATEWAY", "class_name": "AndroidGateway" },
-        ],
-      },
-      "triggers": { "crons": [] },
-    },
-  },
+  // Poll VW for every stored account every minute (Cloudflare's finest cron
+  // granularity); fresh snapshots land in InstantDB and stream to subscribed
+  // apps, and this is the latency floor for derived notifications (TODO §4).
+  // Plain rvs/ev status reads aren't the tsp-token-rate-limited endpoints, so
+  // 1-min polling is safe. Crons don't fire on a clock in dev: `pnpm dev`
+  // pairs wrangler with a curl loop ticking
+  // "http://localhost:8787/cdn-cgi/handler/scheduled" every 60s.
+  // A dead VW session used to turn this into ~60 password logins an hour
+  // (2026-08-13: both OAuth grants started 401ing and reauth() had no
+  // backoff) — right at VW's ~8-10 throttle. The breaker in tokens.ts now
+  // bounds that to one reauth attempt per backoff window, so the every-minute
+  // cron is safe again. NB: setting "crons": [] here does NOT remove the
+  // schedule from a deployed Worker — wrangler treats the empty array as a
+  // no-op, so use the dashboard/API if you ever truly need it off.
   "triggers": { "crons": ["* * * * *"] },
 }

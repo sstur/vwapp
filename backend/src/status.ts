@@ -11,7 +11,6 @@ import type { StatusDTO } from "@vwapp/contract";
 import type { AppEnv } from "./env";
 import type { Db, StoredAccount, StoredVehicle } from "./store";
 import { ensureCarnetToken } from "./tokens";
-import { toStatus, usesAndroid, vehicleCall } from "./vehicle/android";
 import { VwAuthError, vwGetStatus } from "./vw/client";
 
 /**
@@ -25,19 +24,7 @@ export async function readStatus(
   account: StoredAccount,
   vehicle: StoredVehicle,
   spin: string,
-  options: { background?: boolean } = {},
 ): Promise<StatusDTO> {
-  if (usesAndroid(env))
-    return toStatus(
-      await vehicleCall(
-        env,
-        account,
-        vehicle,
-        "status",
-        {},
-        { completion: { vehicleId: vehicle.id }, ...options },
-      ),
-    );
   const carnet = await ensureCarnetToken(db, env, account, vehicle.uuid, spin);
   try {
     return await vwGetStatus(carnet, vehicle.vin, vehicle.uuid);

@@ -8,7 +8,6 @@ import {
   useMutation,
   useMutationState,
 } from "@tanstack/react-query";
-import { randomUUID } from "expo-crypto";
 import { useRouter } from "expo-router";
 import {
   AnimatePresence,
@@ -44,11 +43,9 @@ export function climateStartKey(uuid: string): string[] {
 export function ClimateControl({
   vehicleId,
   uuid,
-  observedOn,
 }: {
   vehicleId: string;
   uuid: string;
-  observedOn?: boolean | undefined;
 }) {
   const router = useRouter();
   // Ticks so the end-time label flips to "turning off soon" on time — the
@@ -60,7 +57,7 @@ export function ClimateControl({
     },
   });
   const session = sessionQuery.data?.climateSessions[0];
-  const active = session !== undefined || observedOn === true;
+  const active = session !== undefined;
 
   // Observe the start mutation fired by the /climate route, so this card shows
   // "Starting…"/errors even once that sheet has closed.
@@ -88,10 +85,7 @@ export function ClimateControl({
     });
   };
   const openAdjust = () => {
-    if (session === undefined) {
-      openStart();
-      return;
-    }
+    if (session === undefined) return;
     router.push({
       pathname: "/climate",
       params: {
@@ -163,7 +157,7 @@ export function ClimateControl({
               tone="red"
               disabled={stopCmd.isPending || startPending}
               onPress={() => {
-                stopCmd.mutate({ requestId: randomUUID(), uuid });
+                stopCmd.mutate({ uuid });
               }}
               label="Stop"
             />

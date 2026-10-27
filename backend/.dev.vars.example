@@ -20,9 +20,3 @@ CREDS_ENC_KEY=base64-of-32-random-bytes
 #   APPLE_MAPS_TEAM_ID=your-apple-team-id
 #   APPLE_MAPS_KEY_ID=your-mapkit-key-id
 #   APPLE_MAPS_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----"
-
-# Stock Android phone transport. Set VEHICLE_PROVIDER=android to disable all
-# direct VW API calls. The URL is a named HTTPS Cloudflare Tunnel to the Mac.
-# VEHICLE_PROVIDER=android
-# ANDROID_BRIDGE_URL=https://vw-bridge.example.com
-# ANDROID_BRIDGE_KEY=the-Mac-service-shared-key
