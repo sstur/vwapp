@@ -3,7 +3,9 @@ import { execFile } from "node:child_process";
 import {
   access,
   chmod,
+  cp,
   mkdir,
+  mkdtemp,
   readFile,
   rename,
   rm,
@@ -16,6 +18,7 @@ import { fileURLToPath } from "node:url";
 import { parseArgs, promisify } from "node:util";
 import { z } from "zod";
 import { readConfig } from "../src/protocol.ts";
+import { serviceNodeExecutable } from "./node-executable.ts";
 
 const exec = promisify(execFile);
 function xml(value: string) {
@@ -34,6 +37,7 @@ async function main() {
     options: {
       config: { type: "string" },
       label: { type: "string", default: "com.vwapp.integrity-bridge" },
+      node: { type: "string" },
     },
   });
   if (!values.config) throw new Error("MISSING_CONFIG");
@@ -46,6 +50,52 @@ async function main() {
   const config = await readConfig(configPath);
   await access(join(root, "dist/main.js"));
   await access(join(root, "dist/integrity-agent.js"));
+  const nodeExecutable = serviceNodeExecutable(process.execPath, values.node);
+  await exec(
+    nodeExecutable,
+    [
+      "--eval",
+      "if (Number(process.versions.node.split('.')[0]) < 24) process.exit(1)",
+    ],
+    { timeout: 10000 },
+  );
+  const pnpm = process.env["npm_execpath"];
+  if (!pnpm) throw new Error("RUN_INSTALLER_WITH_PNPM");
+  // Each deployment owns its code and production dependencies outside the
+  // checkout. Cleaning node_modules or switching branches cannot break it.
+  const releases = join(dirname(configPath), "releases");
+  await mkdir(releases, { recursive: true, mode: 0o700 });
+  const runtime = await mkdtemp(join(releases, label + "-"));
+  try {
+    await exec(
+      nodeExecutable,
+      [
+        pnpm,
+        "--filter",
+        "@vwapp/integrity-bridge",
+        "deploy",
+        "--legacy",
+        "--prod",
+        runtime,
+      ],
+      { cwd: root, timeout: 180000, maxBuffer: 1024 * 1024 },
+    );
+    await cp(join(root, "dist"), join(runtime, "dist"), { recursive: true });
+    // Import native Frida as well: listener health alone cannot detect missing
+    // mint-process dependencies. Do this before touching the running service.
+    await exec(
+      nodeExecutable,
+      [
+        "--input-type=module",
+        "--eval",
+        "await import('zod'); await import('frida');",
+      ],
+      { cwd: runtime, timeout: 15000 },
+    );
+  } catch {
+    await rm(runtime, { recursive: true, force: true });
+    throw new Error("RUNTIME_PREFLIGHT_FAILED");
+  }
   await chmod(configPath, 0o600);
   const plist = join(homedir(), "Library/LaunchAgents", label + ".plist");
   await mkdir(dirname(plist), { recursive: true });
@@ -74,8 +124,9 @@ async function main() {
 <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
 <key>ThrottleInterval</key><integer>15</integer>
 <key>ExitTimeOut</key><integer>90</integer>
-<key>WorkingDirectory</key><string>${xml(root)}</string>
-<key>ProgramArguments</key><array><string>${xml(process.execPath)}</string><string>${xml(join(root, "dist/main.js"))}</string><string>--config</string><string>${xml(configPath)}</string></array>
+<key>WorkingDirectory</key><string>${xml(runtime)}</string>
+<key>ProgramArguments</key><array><string>${xml(nodeExecutable)}</string><string>${xml(join(runtime, "dist/main.js"))}</string><string>--config</string><string>${xml(configPath)}</string></array>
+<key>EnvironmentVariables</key><dict><key>VW_INTEGRITY_NODE</key><string>${xml(nodeExecutable)}</string></dict>
 <key>StandardOutPath</key><string>${xml(join(dirname(configPath), label + ".log"))}</string>
 <key>StandardErrorPath</key><string>${xml(join(dirname(configPath), label + "-error.log"))}</string>
 </dict></plist>

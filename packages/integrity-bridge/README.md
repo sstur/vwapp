@@ -42,9 +42,19 @@ pnpm install-service --config ~/.config/vw-integrity-bridge/config.json
 pnpm test
 ```
 
-The installer validates the config, pins the current Node executable in the
-LaunchAgent, checks listener health, and attempts to restore the prior job if
-startup fails. `pnpm install` permits Frida's native installation script via the
+The installer validates the config and stages a self-contained production
+release under `releases/` beside the private config, using `pnpm deploy`. Its
+code and dependencies are independent of the checkout: removing the repository's
+`node_modules` or switching branches does not affect the running service.
+Before replacing the job it verifies that Zod and native Frida load from that
+release. Old releases remain available for rollback.
+
+On Homebrew installations the LaunchAgent uses the stable `opt` Node path, not
+a versioned `Cellar` path that disappears on upgrades. The same stable path is
+passed to token-mint subprocesses. Other Node installations can specify
+`--node /absolute/stable/path/to/node` when running `pnpm install-service`.
+After installation it checks listener health and attempts to restore the prior
+job if startup fails. `pnpm install` permits Frida's native installation script via the
 workspace's `onlyBuiltDependencies`. On this Mac it installs a prebuilt binary;
 a platform without one may need Frida's upstream native build prerequisites.
 
@@ -85,6 +95,21 @@ launchctl print gui/$(id -u)/com.vwapp.integrity-bridge
 
 The current installation reuses the former Android bridge's Cloudflare tunnel,
 but the old UI bridge LaunchAgent is disabled. Its old endpoints are absent.
+
+## Troubleshooting startup
+
+Check `launchctl print` and the private logs first. Exit 78 / `spawn failed`
+can mean the configured executable has disappeared. `ERR_MODULE_NOT_FOUND`
+means the deployment's dependencies are incomplete; rebuild and reinstall with
+the commands above. Do not point a production LaunchAgent back at the checkout.
+
+Listener health does not prove the phone is usable. Check the configured ADB
+executable with `adb version`, then `adb devices -l`, before debugging Android.
+On this Mac the Homebrew ADB file once hung in macOS's loader before executing;
+a byte-identical private copy ran normally. The local config now points at that
+verified copy under `tools/` beside the config. This was a host executable issue,
+not a phone authorization or integrity failure; its precise OS-level cause was
+not established.
 
 ## Verification commands
 
