@@ -7,7 +7,7 @@ use nix::{
 use plist::{Dictionary, Value};
 use std::{
     fs::{self, OpenOptions, Permissions},
-    io::Write,
+    io::{Read, Write},
     os::unix::{
         fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
         process::CommandExt,
@@ -116,22 +116,28 @@ fn user_command(user: &User, program: &Path, args: &[&str]) -> Command {
 fn as_user(user: &User, program: &Path, args: &[&str]) -> Result<bool> {
     execute(user_command(user, program, args))
 }
-fn read_as_user(user: &User, path: &Path) -> Result<Vec<u8>> {
-    let mut cmd =
-        tokio::process::Command::from(user_command(user, Path::new("/bin/cat"), &[&text(path)?]));
-    let output = tokio::runtime::Builder::new_current_thread()
+fn capture(cmd: Command, deadline: Duration, limit: usize) -> Result<crate::process::Output> {
+    let mut cmd = tokio::process::Command::from(cmd);
+    tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?
-        .block_on(crate::process::run(
-            &mut cmd,
-            &[],
-            Duration::from_secs(15),
-            16384,
-        ))?;
+        .block_on(crate::process::run(&mut cmd, &[], deadline, limit))
+}
+fn read_as_user(user: &User, reader: &Path, path: &Path) -> Result<Option<Vec<u8>>> {
+    let output = capture(
+        user_command(user, reader, &["inspect-file", "--path", &text(path)?]),
+        Duration::from_secs(15),
+        FILE_LIMIT * 5 + 4,
+    )?;
     if !output.success {
-        return Err(Error::Config);
+        return Err(Error::Install);
     }
-    Ok(output.stdout)
+    let bytes: Option<Vec<u8>> =
+        serde_json::from_slice(&output.stdout).map_err(|_| Error::Install)?;
+    if bytes.as_ref().is_some_and(|b| b.len() > FILE_LIMIT) {
+        return Err(Error::Install);
+    }
+    Ok(bytes)
 }
 fn loaded(domain: &str, label: &str) -> Result<bool> {
     command("/bin/launchctl", &["print", &format!("{domain}/{label}")])
@@ -153,12 +159,88 @@ fn start(domain: &str, path: &Path) -> Result<()> {
     }
     Err(Error::Install)
 }
+const FILE_LIMIT: usize = 65536;
 fn read_optional(path: &Path) -> Result<Option<Vec<u8>>> {
-    match fs::read(path) {
-        Ok(b) => Ok(Some(b)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e.into()),
+    let file = match OpenOptions::new()
+        .read(true)
+        .custom_flags(nix::libc::O_NONBLOCK)
+        .open(path)
+    {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+    if !file.metadata()?.is_file() {
+        return Err(Error::Install);
     }
+    let mut bytes = Vec::new();
+    file.take((FILE_LIMIT + 1) as u64).read_to_end(&mut bytes)?;
+    if bytes.len() > FILE_LIMIT {
+        return Err(Error::OutputLimit);
+    }
+    Ok(Some(bytes))
+}
+/// Internal bounded file probe, invoked as the service user by the installer.
+pub fn inspect_file(path: &Path) -> Result<()> {
+    serde_json::to_writer(std::io::stdout().lock(), &read_optional(path)?)
+        .map_err(|_| Error::Install)
+}
+/// Check access to both real lock files, without taking either lock.
+pub fn check_locks(path: &Path) -> Result<()> {
+    let config = Config::load(path)?;
+    for name in [".integrity-device.lock", ".integrity-native.lock"] {
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .custom_flags(nix::libc::O_NONBLOCK)
+            .open(config.lock_directory(path).join(name))?;
+        if !file.metadata()?.is_file() {
+            return Err(Error::Install);
+        }
+    }
+    Ok(())
+}
+fn require_definition(loaded: bool, bytes: Option<&[u8]>, label: &str, path: &Path) -> Result<()> {
+    let valid = bytes
+        .and_then(|b| Value::from_reader(std::io::Cursor::new(b)).ok())
+        .is_some_and(|v| {
+            v.as_dictionary()
+                .and_then(|d| d.get("Label"))
+                .and_then(Value::as_string)
+                == Some(label)
+        });
+    if loaded && !valid {
+        eprintln!(
+            "Refusing to stop loaded {label}: no valid recoverable definition at {}",
+            path.display()
+        );
+        return Err(Error::Install);
+    }
+    Ok(())
+}
+fn loaded_at(domain: &str, label: &str, expected: &Path) -> Result<bool> {
+    let mut cmd = Command::new("/bin/launchctl");
+    cmd.args(["print", &format!("{domain}/{label}")]);
+    let output = capture(cmd, Duration::from_secs(5), 65536)?;
+    if !output.success {
+        return Ok(false);
+    }
+    let status = String::from_utf8_lossy(&output.stdout);
+    let path = status
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("path = "));
+    let actual = path.and_then(|p| fs::canonicalize(p).ok());
+    if actual.is_none() || actual != fs::canonicalize(expected).ok() {
+        eprintln!(
+            "Refusing to replace {domain}/{label}: loaded definition is not {}",
+            expected.display()
+        );
+        return Err(Error::Install);
+    }
+    Ok(true)
 }
 fn atomic(path: &Path, bytes: &[u8], mode: u32, owner: Option<(Uid, Gid)>) -> Result<()> {
     struct Temporary(PathBuf);
@@ -193,9 +275,9 @@ fn plist_bytes(value: &Value) -> Result<Vec<u8>> {
 fn wait_ready(path: &Path, label: &str, deadline: Duration) -> Result<()> {
     let until = Instant::now() + deadline;
     while Instant::now() < until {
-        let output = Command::new("/bin/launchctl")
-            .args(["print", &format!("system/{label}")])
-            .output()?;
+        let mut cmd = Command::new("/bin/launchctl");
+        cmd.args(["print", &format!("system/{label}")]);
+        let output = capture(cmd, until.saturating_duration_since(Instant::now()), 65536)?;
         let status = String::from_utf8_lossy(&output.stdout);
         if status
             .lines()
@@ -227,21 +309,33 @@ struct Job {
     value: Value,
 }
 impl Job {
-    fn new(label: &'static str, home: &Path, gui: &str, value: Value) -> Result<Self> {
+    fn new(
+        label: &'static str,
+        user: &User,
+        reader: &Path,
+        gui: &str,
+        value: Value,
+    ) -> Result<Self> {
         let system = PathBuf::from(format!("/Library/LaunchDaemons/{label}.plist"));
-        let legacy = home.join(format!("Library/LaunchAgents/{label}.plist"));
+        let legacy = user.dir.join(format!("Library/LaunchAgents/{label}.plist"));
+        let previous = read_optional(&system)?;
+        let legacy_bytes = read_as_user(user, reader, &legacy)?;
+        let system_loaded = loaded_at("system", label, &system)?;
+        let legacy_loaded = loaded_at(gui, label, &legacy)?;
+        require_definition(system_loaded, previous.as_deref(), label, &system)?;
+        require_definition(legacy_loaded, legacy_bytes.as_deref(), label, &legacy)?;
         Ok(Self {
             label,
-            previous: read_optional(&system)?,
+            previous,
             previous_mode: fs::metadata(&system)
                 .map(|m| m.mode() & 0o777)
                 .unwrap_or(0o600),
             system_changed: false,
             replacement_published: false,
             legacy_stopped: false,
-            system_loaded: loaded("system", label)?,
-            legacy_bytes: read_optional(&legacy)?,
-            legacy_loaded: loaded(gui, label)?,
+            system_loaded,
+            legacy_bytes,
+            legacy_loaded,
             system,
             legacy,
             value,
@@ -291,8 +385,6 @@ pub fn install(config_path: &Path, name: &str) -> Result<()> {
         return Err(Error::Install);
     }
     let config_path = fs::canonicalize(config_path)?;
-    let original_config = read_as_user(&user, &config_path)?;
-    let config = Config::parse(&original_config)?;
     let home = &user.dir;
     let gui = format!("gui/{}", user.uid);
     let stamp = SystemTime::now()
@@ -314,6 +406,8 @@ pub fn install(config_path: &Path, name: &str) -> Result<()> {
     // macOS copyfile may preserve the source owner even when called as root.
     chown(&binary, Some(Uid::from_raw(0)), Some(Gid::from_raw(0))).map_err(|_| Error::Install)?;
     fs::set_permissions(&binary, Permissions::from_mode(0o755))?;
+    let original_config = read_as_user(&user, &binary, &config_path)?.ok_or(Error::Config)?;
+    let config = Config::parse(&original_config)?;
     let adb = release.join("adb");
     // Read and copy the configured executable without root privileges.
     atomic(&adb, &[], 0o600, Some((user.uid, user.gid)))?;
@@ -342,6 +436,13 @@ pub fn install(config_path: &Path, name: &str) -> Result<()> {
         0o600,
         Some((user.uid, user.gid)),
     )?;
+    if !as_user(
+        &user,
+        &binary,
+        &["check-locks", "--config", &text(&deployed_config)?],
+    )? {
+        return Err(Error::Install);
+    }
     let ready_file = release.join("ready.json");
     atomic(&ready_file, &[], 0o600, Some((user.uid, user.gid)))?;
     for name in [format!("{LABEL}.log"), format!("{LABEL}-error.log")] {
@@ -349,7 +450,8 @@ pub fn install(config_path: &Path, name: &str) -> Result<()> {
     }
     let mut job = Job::new(
         LABEL,
-        home,
+        &user,
+        &binary,
         &gui,
         job_plist(
             LABEL,
@@ -520,7 +622,54 @@ mod tests {
             0o600,
             Some((user.uid, user.gid)),
         )?;
-        assert_eq!(read_as_user(&user, &staged)?, b"private config");
+        let reader = PathBuf::from(std::env::var("VW_BRIDGE_TEST_BINARY")?);
+        assert_eq!(
+            read_as_user(&user, &reader, &staged)?.ok_or("missing staged file")?,
+            b"private config"
+        );
+        assert_eq!(
+            read_as_user(&user, &reader, &dir.path().join("absent"))?,
+            None
+        );
+        let unreadable = dir.path().join("root-only");
+        atomic(&unreadable, b"root private", 0o600, None)?;
+        assert!(read_as_user(&user, &reader, &unreadable).is_err());
+        let lock_config = dir.path().join("locks-config.json");
+        let config = serde_json::json!({
+            "serial":"test", "adb":"/bin/false", "apiKey":"a".repeat(48),
+            "host":"127.0.0.1", "port":8792, "package":"com.vw.carnet.release",
+            "versionCode":"1800220674", "activity":"com.vw.myVW.activities.RoutingActivity",
+            "fridaServer":"/tmp/frida", "lockDirectory":dir.path()
+        });
+        atomic(
+            &lock_config,
+            &serde_json::to_vec(&config)?,
+            0o600,
+            Some((user.uid, user.gid)),
+        )?;
+        assert!(!as_user(
+            &user,
+            &reader,
+            &["check-locks", "--config", &text(&lock_config)?]
+        )?);
+        for name in [".integrity-device.lock", ".integrity-native.lock"] {
+            atomic(
+                &dir.path().join(name),
+                &[],
+                0o600,
+                Some((user.uid, user.gid)),
+            )?;
+        }
+        let held_file = fs::File::open(dir.path().join(".integrity-device.lock"))?;
+        let held_lock =
+            nix::fcntl::Flock::lock(held_file, nix::fcntl::FlockArg::LockExclusiveNonblock)
+                .map_err(|(_, e)| e)?;
+        assert!(as_user(
+            &user,
+            &reader,
+            &["check-locks", "--config", &text(&lock_config)?]
+        )?);
+        drop(held_lock);
         let mut original = Dictionary::new();
         original.insert("Label".into(), string(label));
         original.insert(
@@ -542,7 +691,12 @@ mod tests {
                 &name,
                 &user.dir,
             )?;
-            let mut job = Job::new(label, &user.dir, &gui, replacement)?;
+            let displaced = dir.path().join("displaced.plist");
+            fs::rename(&legacy, &displaced)?;
+            let refused = Job::new(label, &user, &reader, &gui, replacement.clone()).is_err();
+            fs::rename(&displaced, &legacy)?;
+            assert!(refused && loaded(&gui, label)?);
+            let mut job = Job::new(label, &user, &reader, &gui, replacement)?;
             job.activate(&gui)?;
             assert!(
                 wait_ready(
@@ -568,5 +722,53 @@ mod tests {
         let _ = fs::remove_file(legacy);
         let _ = fs::remove_file(system);
         result
+    }
+    #[test]
+    fn loaded_jobs_require_a_valid_recoverable_definition() -> TestResult {
+        let path = Path::new("/missing/plist");
+        assert!(require_definition(false, None, "test", path).is_ok());
+        assert!(require_definition(true, None, "test", path).is_err());
+        assert!(require_definition(true, Some(b"invalid plist"), "test", path).is_err());
+        let mut d = Dictionary::new();
+        d.insert("Label".into(), string("test"));
+        let bytes = plist_bytes(&Value::Dictionary(d))?;
+        assert!(require_definition(true, Some(&bytes), "test", path).is_ok());
+        assert!(require_definition(true, Some(&bytes), "other", path).is_err());
+        Ok(())
+    }
+    #[test]
+    fn snapshot_reads_reject_nonregular_and_oversized_files() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        assert_eq!(read_optional(&dir.path().join("absent"))?, None);
+        assert!(read_optional(dir.path()).is_err());
+        let fifo = dir.path().join("fifo");
+        nix::unistd::mkfifo(
+            &fifo,
+            nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR,
+        )?;
+        let start = Instant::now();
+        assert!(read_optional(&fifo).is_err());
+        assert!(start.elapsed() < Duration::from_secs(1));
+        let big = dir.path().join("large");
+        fs::write(&big, vec![b'x'; FILE_LIMIT + 1])?;
+        assert!(matches!(read_optional(&big), Err(Error::OutputLimit)));
+        Ok(())
+    }
+    #[test]
+    fn subprocess_capture_deadline_kills_and_reaps_stalled_probe() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let marker = dir.path().join("pid");
+        let script = format!("echo $$ > '{}'; exec /bin/sleep 30", marker.display());
+        let mut cmd = Command::new("/bin/sh");
+        cmd.args(["-c", &script]);
+        let start = Instant::now();
+        assert!(matches!(
+            capture(cmd, Duration::from_millis(200), 1024),
+            Err(Error::Timeout)
+        ));
+        assert!(start.elapsed() < Duration::from_secs(2));
+        let pid = Pid::from_raw(fs::read_to_string(marker)?.trim().parse()?);
+        assert!(nix::sys::signal::kill(pid, None).is_err());
+        Ok(())
     }
 }

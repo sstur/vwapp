@@ -67,10 +67,16 @@ private deployment copy, and stages backups under the root-controlled release
 directory. Ownership and mode are set before publishing files. The optional
 `lockDirectory` in the deployment config preserves shared device locks across
 releases and canaries; it defaults to the source config's directory.
+Both lock files must be accessible to the service user. The installer checks
+this before stopping anything, without acquiring a lock held by an active mint.
+Snapshots are bounded regular-file reads; user-controlled files are read as
+the service user. A loaded job without a valid plist at its expected path is
+left running and installation aborts.
 
 After starting the new job, a private readiness file must identify its launchd
 PID and successfully bound socket. This does not send the bearer key to an
-unverified listener. Failed activation restores the previous job; the old GUI
+unverified listener. Readiness subprocesses share the overall 15-second deadline;
+a stalled probe is killed and reaped. Failed activation restores the previous job; the old GUI
 plist is left intact until success, preserving its ownership and permissions.
 The tunnel is never rewritten or restarted. Readiness does not prove upstream
 VW health: run the integration checks below before deleting old releases.

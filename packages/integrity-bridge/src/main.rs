@@ -27,6 +27,16 @@ enum Action {
         #[arg(long)]
         user: String,
     },
+    #[command(hide = true)]
+    InspectFile {
+        #[arg(long)]
+        path: PathBuf,
+    },
+    #[command(hide = true)]
+    CheckLocks {
+        #[arg(long)]
+        config: PathBuf,
+    },
 }
 fn main() {
     nix::sys::stat::umask(nix::sys::stat::Mode::from_bits_truncate(0o077));
@@ -34,6 +44,8 @@ fn main() {
         Action::Mint { config } => worker::mint(&config),
         Action::Serve { config, ready_file } => run(config, ready_file),
         Action::Install { config, user } => install::install(&config, &user),
+        Action::InspectFile { path } => install::inspect_file(&path),
+        Action::CheckLocks { config } => install::check_locks(&config),
     };
     if let Err(error) = result {
         // Error's Display deliberately excludes native diagnostics and secrets.
