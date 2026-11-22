@@ -75,14 +75,20 @@ fn apk_pid_hash_and_shell_boundaries() -> TestResult {
     assert!(parse_pid("oops").is_err());
     assert_eq!(shell_quote("it's $(unsafe)"), "'it'\\''s $(unsafe)'");
     assert!(matches_version(
-        " versionCode=1800220674 minSdk=28",
+        "Packages:\n  Package [com.vw.carnet.release] (abcd):\n    versionCode=1800220674 minSdk=28",
+        "com.vw.carnet.release",
         "1800220674"
     ));
     assert!(!matches_version(
-        " versionCode=18002206740 minSdk=28",
+        "Packages:\n  Package [com.vw.carnet.release] (abcd):\n    versionCode=18002206740 minSdk=28",
+        "com.vw.carnet.release",
         "1800220674"
     ));
-    assert!(!matches_version("unsupported", "1800220674"));
+    assert!(!matches_version(
+        "unsupported",
+        "com.vw.carnet.release",
+        "1800220674"
+    ));
     assert!(
         IntegrityRequest::parse(format!(r#"{{"requestHash":"{}="}}"#, "a".repeat(43)).as_bytes())
             .is_ok()

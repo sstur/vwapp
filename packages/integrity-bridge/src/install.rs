@@ -1,19 +1,23 @@
 //! System launchd installation. The installed service runs as the user, not root.
 use crate::{Error, Result, config::Config};
-use nix::unistd::{Gid, Uid, User, chown, geteuid};
+use nix::{
+    sys::signal::{Signal, killpg},
+    unistd::{Gid, Pid, Uid, User, chown, fchown, geteuid},
+};
 use plist::{Dictionary, Value};
 use std::{
     fs::{self, OpenOptions, Permissions},
-    io::{Read, Write},
-    net::{TcpStream, ToSocketAddrs},
-    os::unix::fs::{OpenOptionsExt, PermissionsExt},
+    io::Write,
+    os::unix::{
+        fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
+        process::CommandExt,
+    },
     path::{Path, PathBuf},
     process::{Command, Stdio},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 const LABEL: &str = "com.vwapp.integrity-bridge";
-const TUNNEL: &str = "com.vwapp.android-tunnel";
 fn string(value: impl Into<String>) -> Value {
     Value::String(value.into())
 }
@@ -63,25 +67,71 @@ pub fn job_plist(
     );
     Ok(Value::Dictionary(d))
 }
-fn command(program: &str, args: &[&str]) -> Result<bool> {
-    let mut child = Command::new(program)
-        .args(args)
+fn execute(mut command: Command) -> Result<bool> {
+    let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
+        .process_group(0)
         .spawn()?;
+    let pid = Pid::from_raw(i32::try_from(child.id()).map_err(|_| Error::Install)?);
     let start = Instant::now();
     loop {
         if let Some(status) = child.try_wait()? {
+            let _ = killpg(pid, Signal::SIGKILL);
             return Ok(status.success());
         }
         if start.elapsed() > Duration::from_secs(100) {
-            let _ = child.kill();
+            let _ = killpg(pid, Signal::SIGKILL);
             let _ = child.wait();
             return Err(Error::Timeout);
         }
         std::thread::sleep(Duration::from_millis(50));
     }
+}
+fn command(program: &str, args: &[&str]) -> Result<bool> {
+    let mut cmd = Command::new(program);
+    cmd.args(args);
+    execute(cmd)
+}
+fn user_command(user: &User, program: &Path, args: &[&str]) -> Command {
+    let mut cmd = Command::new("/usr/bin/sudo");
+    cmd.env_clear()
+        .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+        .env("HOME", &user.dir)
+        .env("USER", &user.name)
+        .args([
+            "-n",
+            "-H",
+            "-u",
+            &format!("#{}", user.uid),
+            "-g",
+            &format!("#{}", user.gid),
+            "--",
+        ])
+        .arg(program)
+        .args(args);
+    cmd
+}
+fn as_user(user: &User, program: &Path, args: &[&str]) -> Result<bool> {
+    execute(user_command(user, program, args))
+}
+fn read_as_user(user: &User, path: &Path) -> Result<Vec<u8>> {
+    let mut cmd =
+        tokio::process::Command::from(user_command(user, Path::new("/bin/cat"), &[&text(path)?]));
+    let output = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?
+        .block_on(crate::process::run(
+            &mut cmd,
+            &[],
+            Duration::from_secs(15),
+            16384,
+        ))?;
+    if !output.success {
+        return Err(Error::Config);
+    }
+    Ok(output.stdout)
 }
 fn loaded(domain: &str, label: &str) -> Result<bool> {
     command("/bin/launchctl", &["print", &format!("{domain}/{label}")])
@@ -110,13 +160,23 @@ fn read_optional(path: &Path) -> Result<Option<Vec<u8>>> {
         Err(e) => Err(e.into()),
     }
 }
-fn atomic(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
+fn atomic(path: &Path, bytes: &[u8], mode: u32, owner: Option<(Uid, Gid)>) -> Result<()> {
+    struct Temporary(PathBuf);
+    impl Drop for Temporary {
+        fn drop(&mut self) {
+            let _ = fs::remove_file(&self.0);
+        }
+    }
     let temp = path.with_extension(format!("tmp-{}", std::process::id()));
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(mode)
         .open(&temp)?;
+    let _cleanup = Temporary(temp.clone());
+    if let Some((uid, gid)) = owner {
+        fchown(&file, Some(uid), Some(gid)).map_err(|_| Error::Install)?;
+    }
     file.set_permissions(Permissions::from_mode(mode))?;
     file.write_all(bytes)?;
     file.sync_all()?;
@@ -130,35 +190,27 @@ fn plist_bytes(value: &Value) -> Result<Vec<u8>> {
         .map_err(|_| Error::Install)?;
     Ok(bytes)
 }
-fn health(config: &Config) -> bool {
-    let host = if config.host == "0.0.0.0" {
-        "127.0.0.1"
-    } else {
-        &config.host
-    };
-    let Some(address) = (host, config.port)
-        .to_socket_addrs()
-        .ok()
-        .and_then(|mut a| a.next())
-    else {
-        return false;
-    };
-    let Ok(mut socket) = TcpStream::connect_timeout(&address, Duration::from_secs(1)) else {
-        return false;
-    };
-    let _ = socket.set_read_timeout(Some(Duration::from_secs(1)));
-    let _ = socket.set_write_timeout(Some(Duration::from_secs(1)));
-    let request = format!(
-        "GET /healthz HTTP/1.1\r\nHost: bridge\r\nAuthorization: Bearer {}\r\nConnection: close\r\n\r\n",
-        config.api_key
-    );
-    if socket.write_all(request.as_bytes()).is_err() {
-        return false;
+fn wait_ready(path: &Path, label: &str, deadline: Duration) -> Result<()> {
+    let until = Instant::now() + deadline;
+    while Instant::now() < until {
+        let output = Command::new("/bin/launchctl")
+            .args(["print", &format!("system/{label}")])
+            .output()?;
+        let status = String::from_utf8_lossy(&output.stdout);
+        if status
+            .lines()
+            .find_map(|line| {
+                line.trim()
+                    .strip_prefix("pid = ")
+                    .and_then(|p| p.parse::<u32>().ok())
+            })
+            .is_some_and(|pid| crate::readiness::matches(path, pid))
+        {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(250));
     }
-    let mut response = String::new();
-    socket.take(4096).read_to_string(&mut response).is_ok()
-        && response.starts_with("HTTP/1.1 200")
-        && response.contains("vw-integrity")
+    Err(Error::Install)
 }
 struct Job {
     label: &'static str,
@@ -167,6 +219,10 @@ struct Job {
     system_loaded: bool,
     legacy: PathBuf,
     legacy_bytes: Option<Vec<u8>>,
+    previous_mode: u32,
+    system_changed: bool,
+    replacement_published: bool,
+    legacy_stopped: bool,
     legacy_loaded: bool,
     value: Value,
 }
@@ -177,6 +233,12 @@ impl Job {
         Ok(Self {
             label,
             previous: read_optional(&system)?,
+            previous_mode: fs::metadata(&system)
+                .map(|m| m.mode() & 0o777)
+                .unwrap_or(0o600),
+            system_changed: false,
+            replacement_published: false,
+            legacy_stopped: false,
             system_loaded: loaded("system", label)?,
             legacy_bytes: read_optional(&legacy)?,
             legacy_loaded: loaded(gui, label)?,
@@ -185,27 +247,33 @@ impl Job {
             value,
         })
     }
-    fn activate(&self, gui: &str) -> Result<()> {
-        stop(gui, self.label)?;
+    fn activate(&mut self, gui: &str) -> Result<()> {
+        if self.legacy_loaded {
+            stop(gui, self.label)?;
+            self.legacy_stopped = true;
+        }
         stop("system", self.label)?;
-        atomic(&self.system, &plist_bytes(&self.value)?, 0o644)?;
+        self.system_changed = true;
+        atomic(&self.system, &plist_bytes(&self.value)?, 0o600, None)?;
+        self.replacement_published = true;
         start("system", &self.system)
     }
     fn restore(&self, gui: &str) -> Result<()> {
-        stop(gui, self.label)?;
-        stop("system", self.label)?;
-        if let Some(bytes) = &self.previous {
-            atomic(&self.system, bytes, 0o644)?;
-            if self.system_loaded {
-                start("system", &self.system)?;
+        if self.system_changed {
+            stop("system", self.label)?;
+            if let Some(bytes) = &self.previous {
+                if self.replacement_published {
+                    atomic(&self.system, bytes, self.previous_mode, None)?;
+                }
+                if self.system_loaded {
+                    start("system", &self.system)?;
+                }
+            } else if self.replacement_published && self.system.exists() {
+                fs::remove_file(&self.system)?;
             }
-        } else if self.system.exists() {
-            fs::remove_file(&self.system)?;
         }
-        if let Some(bytes) = &self.legacy_bytes {
-            atomic(&self.legacy, bytes, 0o600)?;
-        }
-        if self.legacy_loaded {
+        // The legacy plist is never rewritten; ownership/mode remain intact.
+        if self.legacy_stopped && !loaded(gui, self.label)? {
             start(gui, &self.legacy)?;
         }
         Ok(())
@@ -223,8 +291,8 @@ pub fn install(config_path: &Path, name: &str) -> Result<()> {
         return Err(Error::Install);
     }
     let config_path = fs::canonicalize(config_path)?;
-    let config = Config::load(&config_path)?;
-    let original_config = fs::read(&config_path)?;
+    let original_config = read_as_user(&user, &config_path)?;
+    let config = Config::parse(&original_config)?;
     let home = &user.dir;
     let gui = format!("gui/{}", user.uid);
     let stamp = SystemTime::now()
@@ -233,6 +301,10 @@ pub fn install(config_path: &Path, name: &str) -> Result<()> {
         .as_nanos();
     let base = Path::new("/Library/Application Support/VWIntegrityBridge");
     fs::create_dir_all(base)?;
+    let metadata = fs::symlink_metadata(base)?;
+    if !metadata.is_dir() || metadata.uid() != 0 || metadata.mode() & 0o022 != 0 {
+        return Err(Error::Install);
+    }
     fs::set_permissions(base, Permissions::from_mode(0o755))?;
     let release = base.join(format!("2.0.0-{stamp}"));
     fs::create_dir(&release)?;
@@ -243,101 +315,258 @@ pub fn install(config_path: &Path, name: &str) -> Result<()> {
     chown(&binary, Some(Uid::from_raw(0)), Some(Gid::from_raw(0))).map_err(|_| Error::Install)?;
     fs::set_permissions(&binary, Permissions::from_mode(0o755))?;
     let adb = release.join("adb");
-    fs::copy(&config.adb, &adb)?;
+    // Read and copy the configured executable without root privileges.
+    atomic(&adb, &[], 0o600, Some((user.uid, user.gid)))?;
+    if !as_user(
+        &user,
+        Path::new("/bin/cp"),
+        &[&text(&config.adb)?, &text(&adb)?],
+    )? {
+        return Err(Error::Install);
+    }
     chown(&adb, Some(Uid::from_raw(0)), Some(Gid::from_raw(0))).map_err(|_| Error::Install)?;
     fs::set_permissions(&adb, Permissions::from_mode(0o755))?;
-    if !command(&text(&binary)?, &["--version"])? || !command(&text(&adb)?, &["version"])? {
+    if !as_user(&user, &binary, &["--version"])? || !as_user(&user, &adb, &["version"])? {
         return Err(Error::Install);
     }
     let mut updated: serde_json::Value =
         serde_json::from_slice(&original_config).map_err(|_| Error::Config)?;
     updated["adb"] = serde_json::Value::String(text(&adb)?);
+    updated["lockDirectory"] =
+        serde_json::Value::String(text(&config.lock_directory(&config_path))?);
     let new_config = serde_json::to_vec_pretty(&updated).map_err(|_| Error::Config)?;
-    let mut jobs = vec![Job::new(
+    let deployed_config = release.join("config.json");
+    atomic(
+        &deployed_config,
+        &new_config,
+        0o600,
+        Some((user.uid, user.gid)),
+    )?;
+    let ready_file = release.join("ready.json");
+    atomic(&ready_file, &[], 0o600, Some((user.uid, user.gid)))?;
+    for name in [format!("{LABEL}.log"), format!("{LABEL}-error.log")] {
+        atomic(&release.join(name), &[], 0o600, Some((user.uid, user.gid)))?;
+    }
+    let mut job = Job::new(
         LABEL,
         home,
         &gui,
         job_plist(
             LABEL,
             &binary,
-            vec!["serve".into(), "--config".into(), text(&config_path)?],
-            &config_path,
+            vec![
+                "serve".into(),
+                "--config".into(),
+                text(&deployed_config)?,
+                "--ready-file".into(),
+                text(&ready_file)?,
+            ],
+            &deployed_config,
             name,
             home,
         )?,
-    )?];
-    let tunnel_gui = home.join(format!("Library/LaunchAgents/{TUNNEL}.plist"));
-    let tunnel_system = PathBuf::from(format!("/Library/LaunchDaemons/{TUNNEL}.plist"));
-    let tunnel_source = if tunnel_system.exists() {
-        &tunnel_system
-    } else {
-        &tunnel_gui
-    };
-    if tunnel_source.exists() {
-        let mut tunnel = Value::from_file(tunnel_source).map_err(|_| Error::Install)?;
-        let d = tunnel.as_dictionary_mut().ok_or(Error::Install)?;
-        d.remove("LimitLoadToSessionType");
-        d.insert("UserName".into(), string(name));
-        d.insert("RunAtLoad".into(), Value::Boolean(true));
-        d.insert("KeepAlive".into(), Value::Boolean(true));
-        d.insert("ThrottleInterval".into(), Value::Integer(5.into()));
-        let mut env = Dictionary::new();
-        env.insert("HOME".into(), string(text(home)?));
-        d.insert("EnvironmentVariables".into(), Value::Dictionary(env));
-        jobs.push(Job::new(TUNNEL, home, &gui, tunnel)?);
-    }
-    let backup = config_path
-        .parent()
-        .ok_or(Error::Config)?
-        .join(format!("before-rust-{stamp}"));
+    )?;
+    // Root never writes into the user-controlled source config/backup directory.
+    let backup = release.join("backup");
     fs::create_dir(&backup)?;
-    chown(&backup, Some(user.uid), Some(user.gid)).map_err(|_| Error::Install)?;
-    fs::write(backup.join("config.json"), &original_config)?;
-    for job in &jobs {
-        if let Some(b) = &job.previous {
-            fs::write(backup.join(format!("system-{}.plist", job.label)), b)?;
-        }
-        if let Some(b) = &job.legacy_bytes {
-            fs::write(backup.join(format!("gui-{}.plist", job.label)), b)?;
-        }
+    fs::set_permissions(&backup, Permissions::from_mode(0o700))?;
+    atomic(&backup.join("config.json"), &original_config, 0o600, None)?;
+    if let Some(bytes) = &job.previous {
+        atomic(&backup.join("system.plist"), bytes, 0o600, None)?;
+    }
+    if let Some(bytes) = &job.legacy_bytes {
+        atomic(&backup.join("gui.plist"), bytes, 0o600, None)?;
     }
     let result: Result<()> = (|| {
-        atomic(&config_path, &new_config, 0o600)?;
-        chown(&config_path, Some(user.uid), Some(user.gid)).map_err(|_| Error::Install)?;
-        for job in &jobs {
-            job.activate(&gui)?;
-            if job.label == LABEL {
-                let until = Instant::now() + Duration::from_secs(15);
-                while !health(&config) {
-                    if Instant::now() >= until {
-                        return Err(Error::Install);
-                    }
-                    std::thread::sleep(Duration::from_millis(250));
-                }
-            }
-        }
-        for job in &jobs {
-            if job.legacy.exists() {
-                fs::remove_file(&job.legacy)?;
-            }
+        job.activate(&gui)?;
+        wait_ready(&ready_file, LABEL, Duration::from_secs(15))?;
+        // Commit last: no later fallible operation can require restoring this file.
+        if job.legacy.exists()
+            && !as_user(
+                &user,
+                Path::new("/bin/rm"),
+                &["-f", "--", &text(&job.legacy)?],
+            )?
+        {
+            return Err(Error::Install);
         }
         Ok(())
     })();
     if result.is_err() {
-        atomic(&config_path, &original_config, 0o600)?;
-        chown(&config_path, Some(user.uid), Some(user.gid)).map_err(|_| Error::Install)?;
-        let mut restored = true;
-        for job in jobs.iter().rev() {
-            if job.restore(&gui).is_err() {
-                restored = false;
-            }
-        }
-        eprintln!("Installation failed; previous jobs restored: {restored}");
+        let restored = job.restore(&gui).is_ok();
+        eprintln!("Installation failed; previous job restored: {restored}");
         return Err(Error::Install);
     }
     println!(
-        "Installed system LaunchDaemon as {name}; local health verified. Binary: {}",
+        "Installed system LaunchDaemon as {name}; new process readiness verified. Binary: {}",
         binary.display()
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    type TestResult = std::result::Result<(), Box<dyn std::error::Error>>;
+    fn fixture(dir: &Path) -> Result<Job> {
+        let system = dir.join("system.plist");
+        let legacy = dir.join("legacy.plist");
+        fs::write(&system, b"replacement")?;
+        fs::write(&legacy, b"original GUI plist")?;
+        fs::set_permissions(&legacy, Permissions::from_mode(0o640))?;
+        Ok(Job {
+            label: "com.vwapp.nonexistent-installer-fixture",
+            system,
+            legacy,
+            previous: Some(b"original system plist".to_vec()),
+            previous_mode: 0o640,
+            system_loaded: false,
+            legacy_loaded: false,
+            legacy_bytes: Some(b"original GUI plist".to_vec()),
+            system_changed: false,
+            replacement_published: false,
+            legacy_stopped: false,
+            value: Value::Dictionary(Dictionary::new()),
+        })
+    }
+    #[test]
+    fn rollback_only_touches_activated_job_and_preserves_legacy_file() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let mut job = fixture(dir.path())?;
+        let original = fs::metadata(&job.legacy)?;
+        job.restore("gui/0")?;
+        assert_eq!(fs::read(&job.system)?, b"replacement");
+        job.system_changed = true;
+        job.replacement_published = true;
+        job.restore("gui/0")?;
+        assert_eq!(fs::read(&job.system)?, b"original system plist");
+        assert_eq!(fs::metadata(&job.system)?.mode() & 0o777, 0o640);
+        let restored = fs::metadata(&job.legacy)?;
+        assert_eq!(
+            (
+                original.ino(),
+                original.uid(),
+                original.gid(),
+                original.mode()
+            ),
+            (
+                restored.ino(),
+                restored.uid(),
+                restored.gid(),
+                restored.mode()
+            )
+        );
+        assert_eq!(fs::read(&job.legacy)?, b"original GUI plist");
+        Ok(())
+    }
+    #[test]
+    fn atomic_publication_preserves_private_metadata_and_rejects_temp_symlinks() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("config.json");
+        atomic(&path, b"old", 0o600, None)?;
+        let old = fs::metadata(&path)?;
+        atomic(
+            &path,
+            b"new",
+            0o600,
+            Some((Uid::from_raw(old.uid()), Gid::from_raw(old.gid()))),
+        )?;
+        let new = fs::metadata(&path)?;
+        assert_eq!(
+            (new.uid(), new.gid(), new.mode() & 0o777),
+            (old.uid(), old.gid(), 0o600)
+        );
+        let temp = path.with_extension(format!("tmp-{}", std::process::id()));
+        std::os::unix::fs::symlink(&path, temp)?;
+        assert!(atomic(&path, b"must not write", 0o600, None).is_err());
+        assert_eq!(fs::read(path)?, b"new");
+        Ok(())
+    }
+    /// Opt-in, isolated real launchd rollback exercise. Does not touch production.
+    #[test]
+    #[ignore = "requires sudo and VW_BRIDGE_TEST_USER; uses an isolated launchd label"]
+    fn privileged_preflight_and_failed_launchagent_migration() -> TestResult {
+        assert!(geteuid().is_root());
+        let name = std::env::var("VW_BRIDGE_TEST_USER")?;
+        let user = User::from_name(&name)?.ok_or("unknown test user")?;
+        assert!(!user.uid.is_root());
+        let label = "com.vwapp.integrity-installer-regression";
+        let gui = format!("gui/{}", user.uid);
+        let legacy = user.dir.join(format!("Library/LaunchAgents/{label}.plist"));
+        let system = PathBuf::from(format!("/Library/LaunchDaemons/{label}.plist"));
+        assert!(!legacy.exists() && !system.exists());
+        assert!(!loaded(&gui, label)? && !loaded("system", label)?);
+        // root's per-user macOS TMPDIR has non-traversable ancestors.
+        let dir = tempfile::tempdir_in("/private/tmp")?;
+        fs::set_permissions(dir.path(), Permissions::from_mode(0o755))?;
+        let marker = dir.path().join("preflight-user");
+        atomic(&marker, &[], 0o600, Some((user.uid, user.gid)))?;
+        let probe = dir.path().join("adb-probe");
+        let script = format!(
+            "#!/bin/sh\n/usr/bin/id -u > '{}'\n/usr/bin/id -g >> '{}'\n",
+            marker.display(),
+            marker.display()
+        );
+        atomic(&probe, script.as_bytes(), 0o755, None)?;
+        assert!(as_user(&user, &probe, &["version"])?);
+        assert_eq!(
+            fs::read_to_string(&marker)?,
+            format!("{}\n{}\n", user.uid, user.gid)
+        );
+        let staged = dir.path().join("stage.json");
+        atomic(
+            &staged,
+            b"private config",
+            0o600,
+            Some((user.uid, user.gid)),
+        )?;
+        assert_eq!(read_as_user(&user, &staged)?, b"private config");
+        let mut original = Dictionary::new();
+        original.insert("Label".into(), string(label));
+        original.insert(
+            "ProgramArguments".into(),
+            Value::Array(vec![string("/bin/sleep"), string("300")]),
+        );
+        original.insert("RunAtLoad".into(), Value::Boolean(true));
+        let bytes = plist_bytes(&Value::Dictionary(original))?;
+        // Test fixture only: production never rewrites a user-owned LaunchAgent.
+        atomic(&legacy, &bytes, 0o640, Some((user.uid, user.gid)))?;
+        let result: TestResult = (|| {
+            start(&gui, &legacy)?;
+            let before = fs::metadata(&legacy)?;
+            let replacement = job_plist(
+                label,
+                Path::new("/usr/bin/false"),
+                vec![],
+                &staged,
+                &name,
+                &user.dir,
+            )?;
+            let mut job = Job::new(label, &user.dir, &gui, replacement)?;
+            job.activate(&gui)?;
+            assert!(
+                wait_ready(
+                    &dir.path().join("absent-ready"),
+                    label,
+                    Duration::from_millis(500)
+                )
+                .is_err()
+            );
+            job.restore(&gui)?;
+            assert!(loaded(&gui, label)?);
+            assert!(!loaded("system", label)? && !system.exists());
+            let after = fs::metadata(&legacy)?;
+            assert_eq!(
+                (before.ino(), before.uid(), before.gid(), before.mode()),
+                (after.ino(), after.uid(), after.gid(), after.mode())
+            );
+            assert_eq!(fs::read(&legacy)?, bytes);
+            Ok(())
+        })();
+        let _ = stop(&gui, label);
+        let _ = stop("system", label);
+        let _ = fs::remove_file(legacy);
+        let _ = fs::remove_file(system);
+        result
+    }
 }

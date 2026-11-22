@@ -6,6 +6,7 @@ pub mod install;
 #[allow(unsafe_code)]
 mod native;
 pub mod process;
+pub mod readiness;
 pub mod server;
 pub mod worker;
 

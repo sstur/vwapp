@@ -18,8 +18,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let out = PathBuf::from(env::var("OUT_DIR")?);
     let kit = out.join("frida-17.22.2");
-    if !kit.join("libfrida-core.a").exists() {
-        fs::create_dir_all(&kit)?;
+    if !kit.join(".complete").exists() {
+        let staging = out.join("frida-extracting");
+        if staging.exists() {
+            fs::remove_dir_all(&staging)?;
+        }
+        fs::create_dir(&staging)?;
         let archive = out.join("frida-devkit.tar.xz");
         let url = format!(
             "https://github.com/frida/frida/releases/download/17.22.2/frida-core-devkit-17.22.2-macos-{arch}.tar.xz"
@@ -53,12 +57,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .arg("-xf")
             .arg(&archive)
             .arg("-C")
-            .arg(&kit)
+            .arg(&staging)
             .status()?
             .success()
         {
             return Err("Frida devkit extraction failed".into());
         }
+        for file in ["frida-core.h", "libfrida-core.a"] {
+            if !fs::metadata(staging.join(file))?.is_file() {
+                return Err("Frida devkit missing required file".into());
+            }
+        }
+        fs::write(staging.join(".complete"), digest)?;
+        if kit.exists() {
+            fs::remove_dir_all(&kit)?;
+        }
+        fs::rename(staging, &kit)?;
         fs::remove_file(archive)?;
     }
     let bindings = bindgen::Builder::default()

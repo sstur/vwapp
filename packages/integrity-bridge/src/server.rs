@@ -16,6 +16,7 @@ use std::{
     convert::Infallible,
     ffi::OsString,
     fs::OpenOptions,
+    future::Future,
     os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
     sync::{
@@ -192,6 +193,23 @@ async fn handle(
 }
 
 /// Single-threaded HTTP runtime; bounded sockets and one isolated mint worker.
+async fn accept_retry<T, F, Fut>(mut accept: F) -> T
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = std::io::Result<T>>,
+{
+    loop {
+        match accept().await {
+            Ok(socket) => return socket,
+            Err(error) => {
+                eprintln!("listener accept failed: {:?}", error.kind());
+                // Keep active mints alive; avoid spinning on descriptor exhaustion.
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
+    }
+}
+
 pub async fn serve(
     listener: TcpListener,
     config: Config,
@@ -213,8 +231,8 @@ pub async fn serve(
             biased;
             _ = shutdown.changed() => break,
             Some(_) = tasks.join_next(), if !tasks.is_empty() => {},
-            incoming = listener.accept() => {
-                let (socket, _) = incoming?;
+            incoming = accept_retry(|| listener.accept()) => {
+                let (socket, _) = incoming;
                 let Ok(permit) = Arc::clone(&sockets).try_acquire_owned() else { continue; };
                 let state = Arc::clone(&state);
                 let mut stopping = shutdown.clone();
@@ -240,4 +258,28 @@ pub async fn serve(
     };
     let _ = timeout(Duration::from_secs(80), drain).await;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn accept_errors_retry_without_blocking_other_work() {
+        let mut attempts = 0;
+        let accept = accept_retry(|| {
+            attempts += 1;
+            std::future::ready(if attempts < 3 {
+                Err(std::io::Error::from_raw_os_error(nix::libc::EMFILE))
+            } else {
+                Ok(42)
+            })
+        });
+        let active_work = async {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            7
+        };
+        let (accepted, completed) = tokio::join!(accept, active_work);
+        assert_eq!((accepted, completed, attempts), (42, 7, 3));
+    }
 }

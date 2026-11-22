@@ -43,7 +43,11 @@ pub fn mint(config_path: &Path) -> Result<()> {
         .create(true)
         .truncate(false)
         .mode(0o600)
-        .open(config_path.with_file_name(".integrity-native.lock"))?;
+        .open(
+            config
+                .lock_directory(config_path)
+                .join(".integrity-native.lock"),
+        )?;
     let _device_lock =
         Flock::lock(file, FlockArg::LockExclusiveNonblock).map_err(|_| Error::Child)?;
     let mut input = Vec::new();

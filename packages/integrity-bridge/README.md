@@ -34,11 +34,13 @@ from this directory:
 cargo build --release --locked
 cargo test --locked
 mkdir -p ~/.config/vw-integrity-bridge
-cp config.example.json ~/.config/vw-integrity-bridge/config.json
+test -e ~/.config/vw-integrity-bridge/config.json || \
+  cp config.example.json ~/.config/vw-integrity-bridge/config.json
 chmod 600 ~/.config/vw-integrity-bridge/config.json
 ```
 
-Configure the device serial, an independent random bearer key, bind address,
+For upgrades, reuse the existing config and bearer key. For a new installation,
+configure the device serial, an independent random bearer key, bind address,
 working absolute ADB executable and APK details. Provision the matching
 frida-server on the rooted phone and authorize ADB shell root access. Keep the
 plaintext listener private; use the existing authenticated HTTPS tunnel. The
@@ -53,21 +55,31 @@ The installer copies the executable and verified ADB binary to a versioned,
 root-owned `/Library/Application Support/VWIntegrityBridge/` directory. It
 installs `/Library/LaunchDaemons/com.vwapp.integrity-bridge.plist`, running as the
 specified ordinary user. `RunAtLoad` and `KeepAlive` start it at system boot and
-restart it after crashes, independently of GUI login. If the existing
-`com.vwapp.android-tunnel` service is present, it is also migrated to a system
-LaunchDaemon running as that user. FileVault still requires unlocking the Mac's
-boot volume before macOS can start services.
+restart it after crashes, independently of GUI login. The installer leaves
+tunnel configuration alone; provision an independently supervised tunnel when
+setting up a new Mac. This Mac's existing tunnel already runs as a system
+LaunchDaemon. FileVault still requires unlocking the Mac's boot volume before
+macOS can start services.
 
-The installer validates staged binaries before stopping the old service, checks
-local listener health after switching, and restores prior config/jobs if that
-check fails. It saves private config/job backups beside the config and removes
-legacy GUI LaunchAgent plists after success. It does not prove upstream VW or
-tunnel health: run the integration checks below before deleting old releases.
+The installer reads the source config and copies/checks ADB as the service user,
+never executing ADB as root. It leaves the source config untouched, installs a
+private deployment copy, and stages backups under the root-controlled release
+directory. Ownership and mode are set before publishing files. The optional
+`lockDirectory` in the deployment config preserves shared device locks across
+releases and canaries; it defaults to the source config's directory.
+
+After starting the new job, a private readiness file must identify its launchd
+PID and successfully bound socket. This does not send the bearer key to an
+unverified listener. Failed activation restores the previous job; the old GUI
+plist is left intact until success, preserving its ownership and permissions.
+The tunnel is never rewritten or restarted. Readiness does not prove upstream
+VW health: run the integration checks below before deleting old releases.
 Reinstallation uses the same command and is independent of Homebrew Node paths.
 
 Cargo downloads the official Frida devkit for Apple Silicon or Intel macOS on
 the first build, verifies a pinned SHA-256 checksum and generates the C FFI.
-The resulting executable links only macOS system libraries/frameworks. Runtime
+Extraction is published atomically, so interrupted builds cannot reuse a partial
+library. The resulting executable links only macOS system libraries/frameworks. Runtime
 network access is not required for dependency installation. See `assets/` for
 upstream licenses and the embedded agent's provenance.
 
@@ -109,11 +121,13 @@ launchctl print system/com.vwapp.integrity-bridge
 launchctl print system/com.vwapp.android-tunnel
 ```
 
-Root `pnpm test` includes Rust formatting, Clippy and tests as well as strict
+On macOS, root `pnpm test` includes Rust formatting, Clippy and tests as well as strict
 TypeScript checks for the app/backend and phone agent. Tests cover the HTTP
 contract, authentication, malformed/slow input, concurrency, disconnected
 clients, worker crashes, deadlines, process-tree cleanup, parent death and
-shutdown draining. Local service logs live beside the private config.
+shutdown draining and installer regressions. Other platforms explicitly skip
+the macOS-only native checks. Logs live in the installed release directory;
+`launchctl print` shows their paths.
 
 A canary can use a copied private config with host `127.0.0.1` and an unused
 port, started with `./target/release/vw-integrity-bridge serve --config ...`.

@@ -17,10 +17,29 @@ pub fn parse_pid(s: &str) -> Result<Option<u32>> {
         }
     }
 }
-pub fn matches_version(output: &str, version: &str) -> bool {
-    output
-        .split_whitespace()
-        .any(|field| field.strip_prefix("versionCode=") == Some(version))
+pub fn matches_version(output: &str, package: &str, version: &str) -> bool {
+    let header = format!("  Package [{package}] (");
+    let mut active_section = false;
+    let mut target_record = false;
+    let mut records = 0;
+    let mut versions = Vec::new();
+    for line in output.lines() {
+        if !line.is_empty() && !line.starts_with(char::is_whitespace) {
+            active_section = line == "Packages:";
+            target_record = false;
+        } else if active_section && line.starts_with("  Package [") {
+            target_record = line.starts_with(&header);
+            if target_record {
+                records += 1;
+            }
+        } else if target_record {
+            versions.extend(
+                line.split_whitespace()
+                    .filter_map(|field| field.strip_prefix("versionCode=")),
+            );
+        }
+    }
+    records == 1 && versions == [version]
 }
 pub struct Device<'a> {
     pub config: &'a Config,
@@ -60,7 +79,7 @@ impl Device<'_> {
         let version = self
             .shell(&["dumpsys", "package", &self.config.package], true)
             .await?;
-        if !matches_version(&version, &self.config.version_code) {
+        if !matches_version(&version, &self.config.package, &self.config.version_code) {
             return Err(Error::Version);
         }
         if self.pid("frida-server").await?.is_none() {

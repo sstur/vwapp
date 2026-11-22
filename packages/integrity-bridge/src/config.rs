@@ -18,14 +18,24 @@ pub struct Config {
     pub version_code: String,
     pub activity: String,
     pub frida_server: PathBuf,
+    #[serde(default)]
+    pub lock_directory: Option<PathBuf>,
 }
 impl Config {
+    pub fn lock_directory(&self, source: &Path) -> PathBuf {
+        self.lock_directory
+            .clone()
+            .unwrap_or_else(|| source.with_file_name(""))
+    }
     pub fn load(path: &Path) -> Result<Self> {
         let bytes = fs::read(path).map_err(|_| Error::Config)?;
+        Self::parse(&bytes)
+    }
+    pub fn parse(bytes: &[u8]) -> Result<Self> {
         if bytes.len() > 16384 {
             return Err(Error::Config);
         }
-        let c: Self = serde_json::from_slice(&bytes).map_err(|_| Error::Config)?;
+        let c: Self = serde_json::from_slice(bytes).map_err(|_| Error::Config)?;
         c.validate()?;
         Ok(c)
     }
@@ -41,6 +51,10 @@ impl Config {
             || self.serial.contains('\0')
             || !self.adb.is_absolute()
             || !self.frida_server.is_absolute()
+            || self
+                .lock_directory
+                .as_ref()
+                .is_some_and(|p| !p.is_absolute())
             || self.api_key.len() < 32
             || !self.api_key.bytes().all(|b| (0x21..=0x7e).contains(&b))
             || self.host.is_empty()

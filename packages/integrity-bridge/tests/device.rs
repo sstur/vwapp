@@ -40,7 +40,7 @@ async fn unfreezes_existing_process_without_restarting_it() -> TestResult {
         r#"
 case "$4" in
   *getprop*) echo 1;;
-  *dumpsys*) echo 'versionCode=1800220674 minSdk=28';;
+  *dumpsys*) printf '%s\n' 'Packages:' '  Package [com.vw.carnet.release] (abcd):' '    versionCode=1800220674 minSdk=28';;
   *pidof*frida-server*) echo 123;;
   *pidof*com.vw.carnet.release*) echo 456;;
   *isfrozen*) echo true;;
@@ -60,4 +60,35 @@ async fn adb_failure_is_sanitized() -> TestResult {
     let result = Device { config: &config }.ready().await;
     assert!(matches!(result, Err(Error::Adb)));
     Ok(())
+}
+
+#[test]
+fn only_the_unique_active_package_version_is_accepted() {
+    use vw_integrity_bridge::device::matches_version;
+    let package = "com.vw.carnet.release";
+    let active =
+        "Packages:\n  Package [com.vw.carnet.release] (a):\n    versionCode=123 minSdk=28\n";
+    let hidden = "Hidden system packages:\n  Package [com.vw.carnet.release] (b):\n    versionCode=456 minSdk=28\n";
+    assert!(matches_version(
+        &format!("{active}{hidden}"),
+        package,
+        "123"
+    ));
+    assert!(!matches_version(
+        &format!("{active}{hidden}"),
+        package,
+        "456"
+    ));
+    assert!(!matches_version(hidden, package, "456"));
+    assert!(!matches_version(
+        &format!("{active}{active}"),
+        package,
+        "123"
+    ));
+    assert!(!matches_version(
+        &format!("{active}    versionCode=123\n"),
+        package,
+        "123"
+    ));
+    assert!(!matches_version(active, "another.package", "123"));
 }
