@@ -1,0 +1,19 @@
+{
+  "name": "@vwapp/integrity-agent",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "pnpm typecheck && esbuild index.ts --bundle --format=iife --platform=neutral --main-fields=main --target=es2022 --outfile=../integrity-bridge/assets/agent.js",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint index.ts",
+    "format": "prettier --write index.ts *.json README.md",
+    "format:check": "prettier --check index.ts *.json README.md"
+  },
+  "devDependencies": {
+    "@types/frida-gum": "19.12.0",
+    "buffer": "5.7.1",
+    "esbuild": "0.28.1",
+    "frida-java-bridge": "7.0.13"
+  }
+}

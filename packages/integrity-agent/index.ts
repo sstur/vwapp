@@ -1,7 +1,7 @@
 import Java from "frida-java-bridge";
 
 // APK members are dynamically resolved and Frida types them as any. Keep that
-// boundary unknown, check member shapes, and validate outputs on the Node side.
+// boundary unknown, check member shapes, and validate outputs on the Rust side.
 function member(target: unknown, name: string): unknown {
   if (
     target === null ||

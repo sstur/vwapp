@@ -29,8 +29,10 @@ pnpm monorepo:
 - `app/` — Expo (SDK 57) + expo-router + Tamagui mobile app, released through TestFlight
 - `backend/` — Cloudflare Worker (oRPC) that owns the VW session and is the only
   writer to the database
-- `packages/integrity-bridge` — Mac service using the USB Android phone for
+- `packages/integrity-bridge` — native Rust Mac service using the USB Android phone for
   fresh Google Play Integrity attestations, without UI automation
+- `packages/integrity-agent` — strictly typed source for the small phone-side
+  Frida agent embedded in the Rust executable
 - `packages/contract` — shared oRPC contract
 - `packages/db` — shared InstantDB schema
 - `packages/poc` — throwaway reference implementation of the VW protocol

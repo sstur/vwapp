@@ -8,7 +8,8 @@
     "version": "node scripts/version.mts",
     "publish:ios": "pnpm --filter @vwapp/mobile run publish:ios",
     "deploy": "pnpm --filter @vwapp/backend run deploy",
-    "test": "tsc --noEmit -p scripts/tsconfig.json && eslint scripts && pnpm --recursive --parallel --aggregate-output run \"/^(typecheck|lint|format:check)$/\"",
+    "test": "tsc --noEmit -p scripts/tsconfig.json && eslint scripts && pnpm --recursive --parallel --aggregate-output run \"/^(typecheck|lint|format:check)$/\" && pnpm test:bridge",
+    "test:bridge": "cargo fmt --manifest-path packages/integrity-bridge/Cargo.toml --check && cargo clippy --locked --manifest-path packages/integrity-bridge/Cargo.toml --all-targets -- -D warnings && cargo test --locked --manifest-path packages/integrity-bridge/Cargo.toml",
     "typecheck": "tsc --noEmit -p scripts/tsconfig.json && pnpm --recursive --parallel run typecheck",
     "lint": "eslint scripts && pnpm --recursive --parallel run lint",
     "format": "pnpm --recursive --parallel --aggregate-output run format"
@@ -27,7 +28,6 @@
   "pnpm": {
     "onlyBuiltDependencies": [
       "esbuild",
-      "frida",
       "workerd",
       "unrs-resolver"
     ],

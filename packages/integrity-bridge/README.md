@@ -1,142 +1,138 @@
 # VW integrity bridge
 
-The Worker calls VW directly. This small Mac service supplies fresh Standard
-Play Integrity tokens from the USB-connected, registered myVW Android app.
-The service and injected agent are strict TypeScript. Node.js runs the HTTP
-listener, ADB recovery and the official Frida Node bindings; esbuild bundles the
-agent for the phone's Frida runtime. There is no Python runtime or Python CLI in
-the application build or service. Frida itself is a native dependency.
+A native Rust macOS service that supplies fresh Google Standard Play Integrity
+tokens from the USB-connected, registered myVW Android app. The Cloudflare
+Worker still performs VW requests directly. The HTTP API and configuration are
+compatible with the former TypeScript daemon, so existing app releases work
+without a backend or TestFlight update.
 
-There are no taps, screenshots, credentials, VW sessions, or vehicle commands in
-this service. Only a padded base64url SHA-256 request hash crosses the bridge.
+The executable contains the exact Frida Core library and phone-side JavaScript
+agent it needs. No Node, Python, npm packages or repository checkout are needed
+at runtime. The small injected agent runs in Frida's QuickJS on Android; its
+strict TypeScript source lives in `../integrity-agent`. Frida itself is native C.
 
 ## Verified setup
 
 Moto g15 power, LineageOS 23.2 / Android 16, official Google Play myVW
-2026.9.29-9674 (`versionCode 1800220674`). The phone must already pass VW's Play
-Integrity/licensing requirements. Node.js 24, Frida Node bindings/server
-**17.22.2**, **frida-java-bridge 7.0.13**. Earlier Java bridges crash or
-cannot locate ART methods on Android 16. The agent uses obfuscated names from
-this exact APK: an app upgrade requires inspecting and updating the agent.
-The version guard fails closed on unexpected APKs. Keep automatic myVW updates
-off until a replacement version has been verified.
+2026.9.29-9674 (`versionCode 1800220674`), Frida Core/server **17.22.2** and
+**frida-java-bridge 7.0.13**. The phone must already satisfy VW's integrity and
+licensing requirements. The agent's obfuscated class names belong to this exact
+APK. Keep automatic myVW updates off until a replacement has been inspected and
+verified; the version guard rejects unexpected APKs.
 
-## Install
+The service starts Frida/myVW and unfreezes the app as needed, with the screen
+asleep. Cold app startup waits ten seconds before attaching, avoiding Android
+16's ART collector transition. After an Android reboot, its first unlock may
+still be necessary. Keep USB debugging authorized and the Mac awake.
 
-From this package directory, after `pnpm install` at repository root:
+## Build and install
+
+Install Rust (1.88 or newer) and Xcode Command Line Tools. With Cargo on PATH,
+from this directory:
 
 ```sh
-pnpm build
+cargo build --release --locked
+cargo test --locked
 mkdir -p ~/.config/vw-integrity-bridge
 cp config.example.json ~/.config/vw-integrity-bridge/config.json
 chmod 600 ~/.config/vw-integrity-bridge/config.json
 ```
 
-Set the ADB serial, an independent random bearer key, and reachable bind address
-in the private config. Provision the matching frida-server on the rooted phone
-at the configured path and grant its ADB shell root access. The bridge starts
-Frida/myVW and unfreezes the app when needed; the screen can remain asleep.
+Configure the device serial, an independent random bearer key, bind address,
+working absolute ADB executable and APK details. Provision the matching
+frida-server on the rooted phone and authorize ADB shell root access. Keep the
+plaintext listener private; use the existing authenticated HTTPS tunnel. The
+Worker's `INTEGRITY_BRIDGE_URL` and `INTEGRITY_BRIDGE_KEY` must match.
 
 ```sh
-pnpm install-service --config ~/.config/vw-integrity-bridge/config.json
-pnpm test
+sudo ./target/release/vw-integrity-bridge install \
+  --config "$HOME/.config/vw-integrity-bridge/config.json" --user "$(id -un)"
 ```
 
-The installer validates the config and stages a self-contained production
-release under `releases/` beside the private config, using `pnpm deploy`. Its
-code and dependencies are independent of the checkout: removing the repository's
-`node_modules` or switching branches does not affect the running service.
-Before replacing the job it verifies that Zod and native Frida load from that
-release. Old releases remain available for rollback.
+The installer copies the executable and verified ADB binary to a versioned,
+root-owned `/Library/Application Support/VWIntegrityBridge/` directory. It
+installs `/Library/LaunchDaemons/com.vwapp.integrity-bridge.plist`, running as the
+specified ordinary user. `RunAtLoad` and `KeepAlive` start it at system boot and
+restart it after crashes, independently of GUI login. If the existing
+`com.vwapp.android-tunnel` service is present, it is also migrated to a system
+LaunchDaemon running as that user. FileVault still requires unlocking the Mac's
+boot volume before macOS can start services.
 
-On Homebrew installations the LaunchAgent uses the stable `opt` Node path, not
-a versioned `Cellar` path that disappears on upgrades. The same stable path is
-passed to token-mint subprocesses. Other Node installations can specify
-`--node /absolute/stable/path/to/node` when running `pnpm install-service`.
-After installation it checks listener health and attempts to restore the prior
-job if startup fails. `pnpm install` permits Frida's native installation script via the
-workspace's `onlyBuiltDependencies`. On this Mac it installs a prebuilt binary;
-a platform without one may need Frida's upstream native build prerequisites.
+The installer validates staged binaries before stopping the old service, checks
+local listener health after switching, and restores prior config/jobs if that
+check fails. It saves private config/job backups beside the config and removes
+legacy GUI LaunchAgent plists after success. It does not prove upstream VW or
+tunnel health: run the integration checks below before deleting old releases.
+Reinstallation uses the same command and is independent of Homebrew Node paths.
 
-The per-user LaunchAgent restarts on crashes and login. After a Mac reboot the
-user must log in; after a phone reboot, Android may need its first unlock before
-Play Services is usable. Keep the Mac awake and the phone connected/authorized.
-Use the existing authenticated HTTPS tunnel to the configured private address;
-do not expose the plaintext listener directly to the Internet. Set the Worker's
-`INTEGRITY_BRIDGE_URL` and `INTEGRITY_BRIDGE_KEY` secrets to match.
+Cargo downloads the official Frida devkit for Apple Silicon or Intel macOS on
+the first build, verifies a pinned SHA-256 checksum and generates the C FFI.
+The resulting executable links only macOS system libraries/frameworks. Runtime
+network access is not required for dependency installation. See `assets/` for
+upstream licenses and the embedded agent's provenance.
 
-## Protocol and operation
+## HTTP contract and reliability
 
-Both routes require `Authorization: Bearer <key>`:
+Both routes require `Authorization: Bearer <key>` and return JSON with
+`Cache-Control: no-store`:
 
-- `GET /healthz`: service status and last successful mint time (not an active
-  phone check).
-- `POST /v1/integrity`: exactly `{"requestHash":"<44-character padded hash>"}`;
-  returns `{"token":"..."}` with `Cache-Control: no-store`.
+- `GET /healthz` → `{ok:true, service:"vw-integrity", lastSuccessAt:null|epochMs}`.
+  This reports listener health, not active phone availability.
+- `POST /v1/integrity`, exactly `{"requestHash":"<43 base64url characters>="}`
+  → `{"token":"..."}`. Each call mints a fresh token.
+- Errors: 401 `UNAUTHORIZED`, 404 `NOT_FOUND`, 400 `INVALID_REQUEST`, or 503
+  `BRIDGE_BUSY` / `INTEGRITY_UNAVAILABLE`, in an `{"error":"..."}` response.
 
-Each call creates a fresh token. Only one mint may run; overlapping requests
-immediately receive 503 `BRIDGE_BUSY`. An unavailable phone returns 503
-`INTEGRITY_UNAVAILABLE`. Each mint runs in its own Node process, with a 75-second
-deadline that kills its entire process group, including any ADB subprocess.
-The HTTP listener remains responsive during minting. Request bodies are capped
-at 1 KiB and have a five-second receipt deadline; requests and responses are
-validated at runtime. Config and Frida RPC data are also validated. APK members
-are dynamically resolved through checked `unknown` values in the agent; no
-`any`, unchecked type assertions or relaxed lint rules are used in bridge code.
-The Worker serializes refreshes across all clients and handles retry backoff.
-Tokens, hashes and bearer headers are never written to service logs. Logs live
-beside the private config (`com.vwapp.integrity-bridge.log` and
-`com.vwapp.integrity-bridge-error.log`). Do not commit config, tokens, or captured
-phone data.
+A single-threaded Tokio HTTP loop stays responsive while a separate, single-use
+Rust child handles ADB and native Frida. One mint is allowed at a time, protected
+by a semaphore and OS file locks. A disconnected client cannot release the mint
+slot early. Limits: 64 HTTP sockets, 8 KiB header buffer, 1 KiB body, five-second
+header/body receipt deadlines, bounded subprocess output, and a 75-second mint
+deadline. Timeout/cancellation kills the entire worker process group, including
+ADB children. A watchdog removes orphaned workers when the supervisor dies;
+a second worker-held lock prevents overlap during supervisor restart.
+
+SIGTERM stops accepting requests and drains active work for up to 80 seconds;
+launchd allows 90 seconds before forced exit. Native calls and their failure
+modes stay outside the HTTP process. All application `unsafe` code is isolated
+in `src/native.rs`, with documented pointer ownership and callback lifetimes.
+Config, requests and native responses are validated at runtime. Logs contain
+operation timing/success, never tokens, hashes, headers or VW credentials.
+
+## Verification and troubleshooting
 
 ```sh
-launchctl print gui/$(id -u)/com.vwapp.integrity-bridge
+cargo fmt --check
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked
+launchctl print system/com.vwapp.integrity-bridge
+launchctl print system/com.vwapp.android-tunnel
 ```
 
-The current installation reuses the former Android bridge's Cloudflare tunnel,
-but the old UI bridge LaunchAgent is disabled. Its old endpoints are absent.
+Root `pnpm test` includes Rust formatting, Clippy and tests as well as strict
+TypeScript checks for the app/backend and phone agent. Tests cover the HTTP
+contract, authentication, malformed/slow input, concurrency, disconnected
+clients, worker crashes, deadlines, process-tree cleanup, parent death and
+shutdown draining. Local service logs live beside the private config.
 
-## Troubleshooting startup
+A canary can use a copied private config with host `127.0.0.1` and an unused
+port, started with `./target/release/vw-integrity-bridge serve --config ...`.
+Keep it beside the main config so the per-device lock files are shared.
 
-Check `launchctl print` and the private logs first. Exit 78 / `spawn failed`
-can mean the configured executable has disappeared. `ERR_MODULE_NOT_FOUND`
-means the deployment's dependencies are incomplete; rebuild and reinstall with
-the commands above. Do not point a production LaunchAgent back at the checkout.
-
-Listener health does not prove the phone is usable. Check the configured ADB
-executable with `adb version`, then `adb devices -l`, before debugging Android.
-On this Mac the Homebrew ADB file once hung in macOS's loader before executing;
-a byte-identical private copy ran normally. The local config now points at that
-verified copy under `tools/` beside the config. This was a host executable issue,
-not a phone authorization or integrity failure; its precise OS-level cause was
-not established.
-
-## Verification commands
-
-From the package directory, `pnpm test` covers the HTTP contract, native-response
-validation, concurrency, bounded child processes (including descendant cleanup),
-APK guards and cold/frozen-device recovery. `pnpm build` typechecks both Node and
-Frida targets using the repository's strictest TypeScript settings. Root
-`pnpm test` includes the bridge's typechecking, strict typed lint and formatting.
-
-For a staging service, copy the private config to a new private file, choose an
-unused loopback port, and run `pnpm start --config /absolute/path/to/config.json`.
-The installer also supports `--label com.vwapp.integrity-bridge-canary`. Keep
-staging requests sequential with production: both services share one phone.
-
-From `backend/`, with local or deployed `API_URL`:
+From the repository root, using the deployed Worker's RPC URL:
 
 ```sh
-node --env-file=../.env --env-file=.dev.vars --import tsx scripts/restore-smoke.ts --renew
+API_URL=https://your-worker.workers.dev/rpc node --env-file=.env \
+  --env-file=backend/.dev.vars --import tsx backend/scripts/restore-smoke.ts --renew
 ```
 
-This attaches a disposable test client to the existing shared VW session,
-forces OAuth and S-PIN cache expiry, exercises concurrent requests, then checks
+This forces real OAuth/S-PIN renewal, exercises concurrent requests, and checks
 status, climate settings, activity, inbox, map signing and database snapshots.
 It wakes the vehicle but does not lock, unlock, charge or run climate.
-`scripts/command-verify.ts` separately performs a real brief climate start/stop
-cycle and must only be run when that physical action is intended.
 
-Cold launch waits ten seconds before Frida attaches, allowing Android 16's ART
-collector startup transition to finish. Verified with both the app and Frida
-stopped, the screen asleep, and renewal initiated through the deployed Worker.
+If startup fails, inspect launchd state and private logs. A temporarily missing
+bind address at boot is retried by launchd. For device failures first verify the
+configured ADB executable with `adb version` and `adb devices -l`. On this Mac,
+the Homebrew ADB file once hung in the macOS loader while an identical private
+copy worked; the installer deliberately preserves a verified standalone copy.
+Listener health alone does not prove the phone or VW is available.

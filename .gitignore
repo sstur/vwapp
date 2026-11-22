@@ -4,6 +4,7 @@ node_modules/
 
 # build / caches
 dist/
+target/
 .expo/
 .wrangler/
 .tamagui/
