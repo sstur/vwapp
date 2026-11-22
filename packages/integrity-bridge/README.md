@@ -70,8 +70,10 @@ releases and canaries; it defaults to the source config's directory.
 Both lock files must be accessible to the service user. The installer checks
 this before stopping anything, without acquiring a lock held by an active mint.
 Snapshots are bounded regular-file reads; user-controlled files are read as
-the service user. A loaded job without a valid plist at its expected path is
-left running and installation aborts.
+the service user. A loaded job without an executable job definition at its
+expected path is left running and installation aborts. A root-owned installer
+lock prevents overlapping upgrades. Preflight failure removes the new staging
+directory; once activation begins, that release is retained for recovery.
 
 After starting the new job, a private readiness file must identify its launchd
 PID and successfully bound socket. This does not send the bearer key to an

@@ -1,6 +1,7 @@
 //! System launchd installation. The installed service runs as the user, not root.
 use crate::{Error, Result, config::Config};
 use nix::{
+    fcntl::{Flock, FlockArg},
     sys::signal::{Signal, killpg},
     unistd::{Gid, Pid, Uid, User, chown, fchown, geteuid},
 };
@@ -206,12 +207,7 @@ pub fn check_locks(path: &Path) -> Result<()> {
 fn require_definition(loaded: bool, bytes: Option<&[u8]>, label: &str, path: &Path) -> Result<()> {
     let valid = bytes
         .and_then(|b| Value::from_reader(std::io::Cursor::new(b)).ok())
-        .is_some_and(|v| {
-            v.as_dictionary()
-                .and_then(|d| d.get("Label"))
-                .and_then(Value::as_string)
-                == Some(label)
-        });
+        .is_some_and(|v| executable_definition(&v, label));
     if loaded && !valid {
         eprintln!(
             "Refusing to stop loaded {label}: no valid recoverable definition at {}",
@@ -220,6 +216,60 @@ fn require_definition(loaded: bool, bytes: Option<&[u8]>, label: &str, path: &Pa
         return Err(Error::Install);
     }
     Ok(())
+}
+fn executable_definition(value: &Value, label: &str) -> bool {
+    let Some(d) = value.as_dictionary() else {
+        return false;
+    };
+    if d.get("Label").and_then(Value::as_string) != Some(label) {
+        return false;
+    }
+    let program = d
+        .get("Program")
+        .map(|p| p.as_string().is_some_and(|s| Path::new(s).is_absolute()));
+    let arguments = d.get("ProgramArguments").map(|a| {
+        a.as_array().is_some_and(|args| {
+            !args.is_empty()
+                && args.iter().all(|v| v.as_string().is_some())
+                && args
+                    .first()
+                    .and_then(Value::as_string)
+                    .is_some_and(|s| !s.is_empty())
+        })
+    });
+    program != Some(false)
+        && arguments != Some(false)
+        && (program == Some(true) || arguments == Some(true))
+}
+
+fn installation_lock(base: &Path) -> Result<Flock<fs::File>> {
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK)
+        .open(base.join(".install.lock"))?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.uid() != geteuid().as_raw() || metadata.mode() & 0o022 != 0 {
+        return Err(Error::Install);
+    }
+    Flock::lock(file, FlockArg::LockExclusiveNonblock).map_err(|_| {
+        eprintln!("Another bridge installer is running; leaving the service untouched.");
+        Error::Install
+    })
+}
+struct StagedRelease {
+    path: PathBuf,
+    retain: bool,
+}
+impl Drop for StagedRelease {
+    fn drop(&mut self) {
+        if !self.retain {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
 }
 fn loaded_at(domain: &str, label: &str, expected: &Path) -> Result<bool> {
     let mut cmd = Command::new("/bin/launchctl");
@@ -398,8 +448,13 @@ pub fn install(config_path: &Path, name: &str) -> Result<()> {
         return Err(Error::Install);
     }
     fs::set_permissions(base, Permissions::from_mode(0o755))?;
+    let _installation_lock = installation_lock(base)?;
     let release = base.join(format!("2.0.0-{stamp}"));
     fs::create_dir(&release)?;
+    let mut staging = StagedRelease {
+        path: release.clone(),
+        retain: false,
+    };
     fs::set_permissions(&release, Permissions::from_mode(0o755))?;
     let binary = release.join("vw-integrity-bridge");
     fs::copy(std::env::current_exe()?, &binary)?;
@@ -479,6 +534,8 @@ pub fn install(config_path: &Path, name: &str) -> Result<()> {
     if let Some(bytes) = &job.legacy_bytes {
         atomic(&backup.join("gui.plist"), bytes, 0o600, None)?;
     }
+    // From activation onwards, retain the staged release for recovery/diagnosis.
+    staging.retain = true;
     let result: Result<()> = (|| {
         job.activate(&gui)?;
         wait_ready(&ready_file, LABEL, Duration::from_secs(15))?;
@@ -731,9 +788,37 @@ mod tests {
         assert!(require_definition(true, Some(b"invalid plist"), "test", path).is_err());
         let mut d = Dictionary::new();
         d.insert("Label".into(), string("test"));
-        let bytes = plist_bytes(&Value::Dictionary(d))?;
+        let bytes = plist_bytes(&Value::Dictionary(d.clone()))?;
+        assert!(require_definition(true, Some(&bytes), "test", path).is_err());
+        d.insert("ProgramArguments".into(), Value::Array(vec![]));
+        assert!(!executable_definition(
+            &Value::Dictionary(d.clone()),
+            "test"
+        ));
+        d.insert(
+            "ProgramArguments".into(),
+            Value::Array(vec![string("/bin/sleep"), string("1")]),
+        );
+        let bytes = plist_bytes(&Value::Dictionary(d.clone()))?;
         assert!(require_definition(true, Some(&bytes), "test", path).is_ok());
         assert!(require_definition(true, Some(&bytes), "other", path).is_err());
+        d.remove("ProgramArguments");
+        d.insert("Program".into(), string("relative"));
+        assert!(!executable_definition(
+            &Value::Dictionary(d.clone()),
+            "test"
+        ));
+        d.insert("Program".into(), string("/bin/sleep"));
+        assert!(executable_definition(&Value::Dictionary(d), "test"));
+        Ok(())
+    }
+    #[test]
+    fn overlapping_installers_are_excluded_until_commit_or_rollback() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let first = installation_lock(dir.path())?;
+        assert!(installation_lock(dir.path()).is_err());
+        drop(first);
+        let _next = installation_lock(dir.path())?;
         Ok(())
     }
     #[test]
